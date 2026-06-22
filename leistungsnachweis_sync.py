@@ -117,6 +117,46 @@ def paginate_items(board_id: int, column_ids: list) -> list:
     return items
 
 
+def paginate_subitems(board_id: int) -> list:
+    """
+    Lädt alle Subitems eines Boards mit BoardRelationValue inline fragment.
+    Nötig weil text/value für board_relation in Subitems leer zurückkommt —
+    linked_items liefert die verknüpften Kunden korrekt.
+    """
+    query = """
+    query($board_id: ID!, $cursor: String) {
+      boards(ids: [$board_id]) {
+        items_page(limit: 100, cursor: $cursor) {
+          cursor
+          items {
+            id
+            name
+            parent_item { id }
+            column_values(ids: ["board_relation_mm3qpehw", "numeric_mm3qsmbm",
+                                 "dropdown_mm3q3ggs", "color_mm3qgnvz", "text_mm3zvc8n"]) {
+              id text value
+              ... on BoardRelationValue {
+                linked_items { id name }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    items = []
+    cursor = None
+    while True:
+        variables = {"board_id": str(board_id), "cursor": cursor}
+        data = gql(query, variables)
+        page = data["boards"][0]["items_page"]
+        items.extend(page["items"])
+        cursor = page.get("cursor")
+        if not cursor:
+            break
+    return items
+
+
 # ── Datums-Hilfsfunktionen ───────────────────────────────────────────────────
 
 def zeitraeume(monat_override: str = None):
@@ -191,38 +231,47 @@ def lade_bestehende_items_leistung() -> set:
     Lädt alle bestehenden Items im Leistungsnachweise-Board.
     Gibt ein Set von Lookup-Schlüsseln zurück:
     {datum|person_name|kunden_item_id}
+    Nutzt BoardRelationValue inline fragment — text/value liefert None für board_relation.
     """
-    items = paginate_items(BOARD_LEISTUNG, [
-        COL_LN_DATUM, COL_LN_MITARBEITER, COL_LN_KUNDE
-    ])
+    query = """
+    query($board_id: ID!, $cursor: String) {
+      boards(ids: [$board_id]) {
+        items_page(limit: 100, cursor: $cursor) {
+          cursor
+          items {
+            id name
+            column_values(ids: ["date_mm3zzepy", "multiple_person_mm3zpgmx", "board_relation_mm3z3jnk"]) {
+              id text value
+              ... on BoardRelationValue {
+                linked_items { id name }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
     keys = set()
-    for item in items:
-        if item["name"] == STEUERUNGS_ITEM_NAME:
-            continue
-        col = {c["id"]: c for c in item["column_values"]}
+    cursor = None
+    while True:
+        data = gql(query, {"board_id": str(BOARD_LEISTUNG), "cursor": cursor})
+        page = data["boards"][0]["items_page"]
+        for item in page["items"]:
+            if item["name"] == STEUERUNGS_ITEM_NAME:
+                continue
+            col = {c["id"]: c for c in item["column_values"]}
 
-        datum = ""
-        mitarbeiter = ""
-        kunden_id = ""
+            datum = (col.get(COL_LN_DATUM, {}).get("text") or "")[:10]
+            mitarbeiter = col.get(COL_LN_MITARBEITER, {}).get("text") or ""
+            linked = col.get(COL_LN_KUNDE, {}).get("linked_items") or []
+            kunden_id = str(linked[0]["id"]) if linked else ""
 
-        if COL_LN_DATUM in col:
-            datum = (col[COL_LN_DATUM]["text"] or "")[:10]
+            if datum and mitarbeiter:
+                keys.add(f"{datum}|{mitarbeiter}|{kunden_id}")
 
-        if COL_LN_MITARBEITER in col:
-            mitarbeiter = col[COL_LN_MITARBEITER]["text"] or ""
-
-        if COL_LN_KUNDE in col and col[COL_LN_KUNDE]["value"]:
-            try:
-                val = json.loads(col[COL_LN_KUNDE]["value"])
-                linked = val.get("linkedPulseIds", [])
-                if linked:
-                    kunden_id = str(linked[0]["linkedPulseId"])
-            except (json.JSONDecodeError, KeyError, TypeError):
-                pass
-
-        if datum and mitarbeiter:
-            keys.add(f"{datum}|{mitarbeiter}|{kunden_id}")
-
+        cursor = page.get("cursor")
+        if not cursor:
+            break
     return keys
 
 
@@ -256,20 +305,19 @@ def lade_az_items() -> dict:
     return result
 
 
-def lade_subitems(zeitraum_liste: list) -> list:
+def lade_subitems(zeitraum_liste: list) -> tuple:
     """
     Lädt alle relevanten Subitems aus dem Subitems-Board.
-    Filtert auf Zeiträume und vorhandene Kunden-Verknüpfung.
+    Filtert auf Zeiträume. Trennt Einträge mit und ohne Kunden-Verknüpfung.
+    Gibt (relevante, ohne_kunde) zurück.
     """
-    items = paginate_items(BOARD_SUBITEMS, [
-        COL_SUB_KUNDE, COL_SUB_STUNDEN,
-        COL_SUB_TAETIGKEIT, COL_SUB_VERRECHENBAR, COL_SUB_BESCHREIBUNG
-    ])
+    items = paginate_subitems(BOARD_SUBITEMS)
 
     az_items = lade_az_items()
     print(f"  → {len(az_items)} AZ-Parent-Items geladen")
 
     relevante = []
+    ohne_kunde = []
     for item in items:
         parent_id = item.get("parent_item", {})
         if not parent_id:
@@ -283,21 +331,10 @@ def lade_subitems(zeitraum_liste: list) -> list:
 
         col = {c["id"]: c for c in item["column_values"]}
 
-        # Kunden-Verknüpfung auslesen
-        kunden_item_id = ""
-        kunden_name = ""
-        if COL_SUB_KUNDE in col and col[COL_SUB_KUNDE]["value"]:
-            try:
-                val = json.loads(col[COL_SUB_KUNDE]["value"])
-                linked = val.get("linkedPulseIds", [])
-                if linked:
-                    kunden_item_id = str(linked[0]["linkedPulseId"])
-                kunden_name = col[COL_SUB_KUNDE]["text"] or ""
-            except (json.JSONDecodeError, KeyError, TypeError):
-                pass
-
-        if not kunden_item_id:
-            continue  # Kein Kunde → überspringen
+        taetigkeit = col.get(COL_SUB_TAETIGKEIT, {}).get("text", "") or ""
+        verrechenbar = col.get(COL_SUB_VERRECHENBAR, {}).get("text", "") or ""
+        beschreibung = col.get(COL_SUB_BESCHREIBUNG, {}).get("text", "") or ""
+        leistung = beschreibung if beschreibung else taetigkeit
 
         stunden_raw = col.get(COL_SUB_STUNDEN, {}).get("text", "") or ""
         try:
@@ -305,11 +342,24 @@ def lade_subitems(zeitraum_liste: list) -> list:
         except ValueError:
             stunden = 0.0
 
-        taetigkeit = col.get(COL_SUB_TAETIGKEIT, {}).get("text", "") or ""
-        verrechenbar = col.get(COL_SUB_VERRECHENBAR, {}).get("text", "") or ""
-        beschreibung = col.get(COL_SUB_BESCHREIBUNG, {}).get("text", "") or ""
+        # Kunden-Verknüpfung auslesen via linked_items (text/value liefert None für Subitems)
+        kunden_item_id = ""
+        kunden_name = ""
+        if COL_SUB_KUNDE in col:
+            linked_items = col[COL_SUB_KUNDE].get("linked_items") or []
+            if linked_items:
+                kunden_item_id = str(linked_items[0]["id"])
+                kunden_name = linked_items[0]["name"]
 
-        leistung = beschreibung if beschreibung else taetigkeit
+        if not kunden_item_id:
+            ohne_kunde.append({
+                "subitem_id": item["id"],
+                "datum": datum,
+                "mitarbeiter": parent.get("mitarbeiter", ""),
+                "leistung": leistung,
+                "stunden": stunden,
+            })
+            continue
 
         relevante.append({
             "subitem_id": item["id"],
@@ -324,7 +374,7 @@ def lade_subitems(zeitraum_liste: list) -> list:
             "verrechenbar": verrechenbar,
         })
 
-    return relevante
+    return relevante, ohne_kunde
 
 
 # ── Gruppe anlegen / holen ───────────────────────────────────────────────────
@@ -407,6 +457,21 @@ def lege_item_an(eintrag: dict, group_id: str, dry_run: bool) -> bool:
 
 # ── Hauptlogik ───────────────────────────────────────────────────────────────
 
+def _zeige_ohne_kunde(ohne_kunde: list):
+    """Gibt eine übersichtliche Liste der Einträge ohne Kunden-Zuordnung aus."""
+    print("\n" + "-" * 60)
+    print(f"HINWEIS: {len(ohne_kunde)} Einträge fehlt die Kunden-Zuordnung.")
+    print("Bitte in monday.com das Feld 'Kunden' im jeweiligen Subitem befüllen:")
+    print("-" * 60)
+    MAX_ANZEIGE = 30
+    for e in ohne_kunde[:MAX_ANZEIGE]:
+        leistung_kurz = (e["leistung"] or "–")[:45]
+        print(f"  {e['datum']}  {e['mitarbeiter']:<20s}  {e['stunden']:4.1f}h  {leistung_kurz}")
+    if len(ohne_kunde) > MAX_ANZEIGE:
+        print(f"  ... und {len(ohne_kunde) - MAX_ANZEIGE} weitere")
+    print("-" * 60)
+
+
 def sync(monat_override: str = None, dry_run: bool = False):
     print("=" * 60)
     print("Alcanzar — Leistungsnachweis Sync")
@@ -427,11 +492,15 @@ def sync(monat_override: str = None, dry_run: bool = False):
 
     # 3. Subitems laden
     print("\n[2] Lade Subitems aus Arbeitszeiterfassung...")
-    subitems = lade_subitems(zeitraum_liste)
+    subitems, ohne_kunde = lade_subitems(zeitraum_liste)
     print(f"  → {len(subitems)} relevante Subitems gefunden")
+    if ohne_kunde:
+        print(f"  → {len(ohne_kunde)} Subitems ohne Kunden-Zuordnung (werden übersprungen)")
 
     if not subitems:
         print("\nKeine Daten zum Synchronisieren. Fertig.")
+        if ohne_kunde:
+            _zeige_ohne_kunde(ohne_kunde)
         return
 
     # 4. Gruppen-Cache laden
@@ -485,6 +554,9 @@ def sync(monat_override: str = None, dry_run: bool = False):
     print(f"  Duplikate übersprungen: {duplikate_gesamt}")
     print(f"  Gruppen verarbeitet:    {len(gruppen_data)}")
     print("=" * 60)
+
+    if ohne_kunde:
+        _zeige_ohne_kunde(ohne_kunde)
 
 
 # ── Einstiegspunkt ───────────────────────────────────────────────────────────
