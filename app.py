@@ -322,8 +322,8 @@ def erstelle_pdf(kundenname, eintraege, monat):
 # ── Streamlit UI ──────────────────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="Leistungsnachweis Generator",
-    page_icon="📋",
+    page_title="Alcanzar Leistungsnachweis",
+    page_icon="alcanzar-logo-rgb.png",
     layout="centered",
 )
 
