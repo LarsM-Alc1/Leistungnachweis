@@ -228,14 +228,32 @@ def erstelle_pdf(kundenname, eintraege, monat):
         sh = f"{e['stunden']:.2f}".replace(".",",")
         vs = "✓" if e["verrechenbar"]=="Ja" else "~"
         gesamt += e["stunden"]
-        rh = 6.5*mm; ry = y-rh
+        rh = 8*mm; ry = y-rh
         if idx%2==1:
             c.setFillColor(GRAU_HELL); c.rect(ML, ry, TW, rh, fill=1, stroke=0)
         c.setFillColor(GRAU_DUNKEL); c.setFont("Helvetica", 9)
         c.drawString(col_x[0]+2, ry+2*mm, d.strftime("%d.%m.%Y"))
         c.drawString(col_x[1]+2, ry+2*mm, e["mitarbeiter"])
-        leistung = e["leistung"][:50]+"..." if len(e["leistung"])>52 else e["leistung"]
-        c.drawString(col_x[2]+2, ry+2*mm, leistung)
+        # Mehrzeilig umbrechen wenn nötig
+        leistung = e["leistung"]
+        max_w = col_w[2] - 4
+        words = leistung.split()
+        lines = []
+        line = ""
+        for word in words:
+            test = (line + " " + word).strip()
+            if c.stringWidth(test, "Helvetica", 9) <= max_w:
+                line = test
+            else:
+                if line: lines.append(line)
+                line = word
+        if line: lines.append(line)
+        lines = lines[:2]  # max 2 Zeilen
+        if len(lines) == 2:
+            c.drawString(col_x[2]+2, ry+3.5*mm, lines[0])
+            c.drawString(col_x[2]+2, ry+0.5*mm, lines[1])
+        else:
+            c.drawString(col_x[2]+2, ry+2*mm, lines[0] if lines else "")
         c.drawRightString(col_x[3]+col_w[3]-2, ry+2*mm, sh)
         c.drawRightString(col_x[4]+col_w[4]-2, ry+2*mm, vs)
         c.setStrokeColor(GRAU_MITTEL); c.setLineWidth(0.3)
@@ -389,3 +407,35 @@ if st.button("📄 PDF generieren", type="primary", use_container_width=True):
         use_container_width=True,
         type="primary",
     )
+
+    # Outlook-Button
+    st.divider()
+    st.markdown("**📧 Per E-Mail versenden**")
+    empfaenger = st.text_input(
+        "Empfänger E-Mail (optional)",
+        placeholder="kunde@beispiel.de",
+        key="empfaenger_email"
+    )
+
+    betreff = f"Leistungsnachweis {sel_label} – {sel_kunde}"
+    body = (
+        f"Sehr geehrte Damen und Herren,%0D%0A%0D%0A"
+        f"im Anhang erhalten Sie den Leistungsnachweis für {sel_label}.%0D%0A%0D%0A"
+        f"Bitte bestätigen Sie die erbrachten Leistungen und senden Sie das ausgefüllte Dokument zurück.%0D%0A%0D%0A"
+        f"Mit freundlichen Grüßen%0D%0AAlcanzar GmbH"
+    )
+
+    mailto = f"mailto:{empfaenger}?subject={betreff}&body={body}"
+
+    st.markdown(
+        f'''<a href="{mailto}" target="_blank">
+            <button style="
+                width:100%; padding:10px; font-size:15px; font-weight:500;
+                background:#0078D4; color:white; border:none; border-radius:6px;
+                cursor:pointer; margin-top:4px;">
+                📨 Outlook öffnen
+            </button>
+        </a>''',
+        unsafe_allow_html=True
+    )
+    st.caption(f"💡 Das PDF liegt in deinem Download-Ordner als **{dateiname}** — einfach als Anhang in Outlook hinzufügen.")
