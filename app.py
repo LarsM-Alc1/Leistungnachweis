@@ -185,8 +185,8 @@ def erstelle_pdf(kundenname, eintraege, monat):
         c.drawImage(logo_img, ML, y-15*mm, width=55*mm, height=15*mm,
                     preserveAspectRatio=True, mask='auto')
     c.setFont("Helvetica", 8); c.setFillColor(GRAU_DUNKEL)
-    c.drawRightString(ML+TW, y-6*mm,  "Alcanzar GmbH · Geusaer Str. 81f · 06217 Merseburg")
-    c.drawRightString(ML+TW, y-12*mm, "Tel: +49 3461 / 845 39 28 · info@alcanzar.de · www.alcanzar.de")
+    c.drawRightString(ML+TW, y-6*mm,  "Alcanzar GmbH · Fritz-Haber-Straße 9 · 06217 Merseburg")
+    c.drawRightString(ML+TW, y-12*mm, "Tel: 03461 7949251 · info@alcanzar.de · www.alcanzar.de")
     y -= 20*mm
 
     c.setStrokeColor(ALCANZAR_ROT); c.setLineWidth(1.5)
@@ -314,7 +314,7 @@ def erstelle_pdf(kundenname, eintraege, monat):
     c.line(ML, 17*mm, ML+TW, 17*mm)
     c.setFont("Helvetica", 8); c.setFillColor(colors.grey)
     c.drawCentredString(W/2, 12*mm,
-        "Alcanzar GmbH · Geusaer Str. 81f · 06217 Merseburg · HRB 30024 Stendal")
+        "Alcanzar GmbH · Fritz-Haber-Straße 9 · 06217 Merseburg")
 
     c.save()
     return buf.getvalue()
