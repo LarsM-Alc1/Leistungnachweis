@@ -1,32 +1,33 @@
+Leistungsnachweis · YML
 name: Leistungsnachweis Sync
-
+ 
 on:
   schedule:
     - cron: "0 19 * * 1-5"  # täglich Mo–Fr 21:00 Uhr Europe/Berlin (= 19:00 UTC)
   workflow_dispatch:          # manueller Trigger als Fallback
-
+ 
 jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
+ 
     steps:
       - name: Repo auschecken
         uses: actions/checkout@v4
-
+ 
       - name: Python einrichten
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
+ 
       - name: Abhängigkeiten installieren
         run: pip install requests
-
+ 
       - name: Leistungsnachweis synchronisieren
         env:
           MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
         run: python leistungsnachweis_sync.py
-
+ 
       - name: Ergebnis im Log festhalten
         if: always()
         run: echo "Sync abgeschlossen – $(date '+%Y-%m-%d %H:%M:%S UTC')"
