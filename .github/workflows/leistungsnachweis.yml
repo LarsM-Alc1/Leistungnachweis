@@ -2,7 +2,7 @@ name: Leistungsnachweis Sync
 
 on:
   schedule:
-    - cron: "0 5 * * 1-5"   # täglich Mo–Fr 06:00 Uhr Europe/Berlin (= 05:00 UTC)
+    - cron: "0 19 * * 1-5"  # täglich Mo–Fr 21:00 Uhr Europe/Berlin (= 19:00 UTC)
   workflow_dispatch:          # manueller Trigger als Fallback
 
 jobs:
