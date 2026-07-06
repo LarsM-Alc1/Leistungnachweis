@@ -9,8 +9,13 @@ Verarbeitet:
   - Aktueller Monat: 1. bis heute
   - Vormonat: vollständig
 
-Duplikatschutz: Schlüssel = datum|person_name|kunden_item_id
-Kein Eintrag wird doppelt angelegt, egal wie oft das Skript läuft.
+Duplikatschutz: Schlüssel = Quell-Subitem-ID (1:1-Zuordnung)
+Jedes Subitem der Arbeitszeiterfassung wird zu genau einem Leistungs-Item.
+Kein Eintrag wird doppelt angelegt, egal wie oft das Skript läuft — auch
+nicht, wenn dieselbe Person am selben Tag beim selben Kunden mehrere Blöcke
+(gleicher oder unterschiedlicher Auftrag) erfasst. Der Auftrag wird als
+eigene Spalte mitgeführt und trennt mehrere Aufträge desselben Kunden
+(z.B. Rübenerde vs. Rechtsregister).
 
 Verwendung:
   python leistungsnachweis_sync.py
@@ -46,6 +51,7 @@ COL_SUB_STUNDEN      = "numeric_mm3qsmbm"
 COL_SUB_TAETIGKEIT   = "dropdown_mm3q3ggs"
 COL_SUB_VERRECHENBAR = "color_mm3qgnvz"
 COL_SUB_BESCHREIBUNG = "text_mm3zvc8n"
+COL_SUB_AUFTRAG      = "dropdown_mm4x76f8"
 
 # Spalten-IDs Arbeitszeiterfassung-Board (Parent)
 COL_AZ_MITARBEITER   = "multiple_person_mm3qhqt3"
@@ -59,6 +65,8 @@ COL_LN_STUNDEN       = "numeric_mm3zfzkc"
 COL_LN_LEISTUNG      = "text_mm3zzr65"
 COL_LN_VERRECHENBAR  = "color_mm3znz4s"
 COL_LN_STATUS        = "color_mm3ztsba"
+COL_LN_AUFTRAG       = "dropdown_mm50zhnf"
+COL_LN_SUBITEM_ID    = "text_mm50tftx"
 
 # Steuerungs-Item — wird beim Duplikat-Check ignoriert
 STEUERUNGS_ITEM_NAME = "▶ Nachweise generieren"
@@ -133,7 +141,8 @@ def paginate_subitems(board_id: int) -> list:
             name
             parent_item { id }
             column_values(ids: ["board_relation_mm3qpehw", "numeric_mm3qsmbm",
-                                 "dropdown_mm3q3ggs", "color_mm3qgnvz", "text_mm3zvc8n"]) {
+                                 "dropdown_mm3q3ggs", "color_mm3qgnvz", "text_mm3zvc8n",
+                                 "dropdown_mm4x76f8"]) {
               id text value
               ... on BoardRelationValue {
                 linked_items { id name }
@@ -199,6 +208,17 @@ def datum_in_zeitraum(datum_str: str, zeitraum_liste: list) -> bool:
     return any(von <= d <= bis for von, bis in zeitraum_liste)
 
 
+def normalisiere_auftrag(auftrag: str) -> str:
+    """
+    Normalisiert den Auftragswert für Anzeige/Logik.
+    "kein Auftrag" und leer gelten als identisch (= kein Auftrag).
+    """
+    a = (auftrag or "").strip()
+    if a.lower() in ("", "kein auftrag"):
+        return ""
+    return a
+
+
 def monatsname_de(d: date) -> str:
     monate = ["Januar","Februar","März","April","Mai","Juni",
               "Juli","August","September","Oktober","November","Dezember"]
@@ -229,49 +249,18 @@ def lade_mitarbeiter_ids(board_id: int) -> dict:
 def lade_bestehende_items_leistung() -> set:
     """
     Lädt alle bestehenden Items im Leistungsnachweise-Board.
-    Gibt ein Set von Lookup-Schlüsseln zurück:
-    {datum|person_name|kunden_item_id}
-    Nutzt BoardRelationValue inline fragment — text/value liefert None für board_relation.
+    Gibt ein Set der bereits synchronisierten Quell-Subitem-IDs zurück.
+    Die Subitem-ID ist der eindeutige Duplikat-Schlüssel (1:1).
     """
-    query = """
-    query($board_id: ID!, $cursor: String) {
-      boards(ids: [$board_id]) {
-        items_page(limit: 100, cursor: $cursor) {
-          cursor
-          items {
-            id name
-            column_values(ids: ["date_mm3zzepy", "multiple_person_mm3zpgmx", "board_relation_mm3z3jnk"]) {
-              id text value
-              ... on BoardRelationValue {
-                linked_items { id name }
-              }
-            }
-          }
-        }
-      }
-    }
-    """
+    items = paginate_items(BOARD_LEISTUNG, [COL_LN_SUBITEM_ID])
     keys = set()
-    cursor = None
-    while True:
-        data = gql(query, {"board_id": str(BOARD_LEISTUNG), "cursor": cursor})
-        page = data["boards"][0]["items_page"]
-        for item in page["items"]:
-            if item["name"] == STEUERUNGS_ITEM_NAME:
-                continue
-            col = {c["id"]: c for c in item["column_values"]}
-
-            datum = (col.get(COL_LN_DATUM, {}).get("text") or "")[:10]
-            mitarbeiter = col.get(COL_LN_MITARBEITER, {}).get("text") or ""
-            linked = col.get(COL_LN_KUNDE, {}).get("linked_items") or []
-            kunden_id = str(linked[0]["id"]) if linked else ""
-
-            if datum and mitarbeiter:
-                keys.add(f"{datum}|{mitarbeiter}|{kunden_id}")
-
-        cursor = page.get("cursor")
-        if not cursor:
-            break
+    for item in items:
+        if item["name"] == STEUERUNGS_ITEM_NAME:
+            continue
+        col = {c["id"]: c for c in item["column_values"]}
+        subitem_id = (col.get(COL_LN_SUBITEM_ID, {}).get("text", "") or "").strip()
+        if subitem_id:
+            keys.add(subitem_id)
     return keys
 
 
@@ -334,6 +323,7 @@ def lade_subitems(zeitraum_liste: list) -> tuple:
         taetigkeit = col.get(COL_SUB_TAETIGKEIT, {}).get("text", "") or ""
         verrechenbar = col.get(COL_SUB_VERRECHENBAR, {}).get("text", "") or ""
         beschreibung = col.get(COL_SUB_BESCHREIBUNG, {}).get("text", "") or ""
+        auftrag = col.get(COL_SUB_AUFTRAG, {}).get("text", "") or ""
         leistung = beschreibung if beschreibung else taetigkeit
 
         stunden_raw = col.get(COL_SUB_STUNDEN, {}).get("text", "") or ""
@@ -372,6 +362,7 @@ def lade_subitems(zeitraum_liste: list) -> tuple:
             "stunden": stunden,
             "leistung": leistung,
             "verrechenbar": verrechenbar,
+            "auftrag": auftrag,
         })
 
     return relevante, ohne_kunde
@@ -420,7 +411,13 @@ def lege_item_an(eintrag: dict, group_id: str, dry_run: bool) -> bool:
         COL_LN_VERRECHENBAR: {"label": verrechenbar_label},
         COL_LN_STATUS:       {"label": "In Vorbereitung"},
         COL_LN_KUNDE:        {"item_ids": [int(eintrag["kunden_item_id"])]},
+        COL_LN_SUBITEM_ID:   str(eintrag["subitem_id"]),
     }
+
+    # Auftrag setzen, sofern ein echter Auftrag gewählt wurde
+    # ("kein Auftrag"/leer bleibt leer, damit das Feld nicht unnötig gefüllt wird)
+    if normalisiere_auftrag(eintrag.get("auftrag", "")):
+        column_values[COL_LN_AUFTRAG] = {"labels": [eintrag["auftrag"]]}
 
     # Mitarbeiter-ID setzen wenn vorhanden
     if eintrag["mitarbeiter_ids"]:
@@ -432,7 +429,8 @@ def lege_item_an(eintrag: dict, group_id: str, dry_run: bool) -> bool:
         }
 
     if dry_run:
-        print(f"    [DRY-RUN] Würde anlegen: {item_name} | {eintrag['stunden']}h | {eintrag['kunden_name']}")
+        auftrag_info = f" | {eintrag['auftrag']}" if normalisiere_auftrag(eintrag.get("auftrag", "")) else ""
+        print(f"    [DRY-RUN] Würde anlegen: {item_name} | {eintrag['stunden']}h | {eintrag['kunden_name']}{auftrag_info}")
         return True
 
     query = """
@@ -530,7 +528,7 @@ def sync(monat_override: str = None, dry_run: bool = False):
         duplikate = 0
 
         for e in eintraege_sortiert:
-            lookup_key = f"{e['datum']}|{e['mitarbeiter']}|{e['kunden_item_id']}"
+            lookup_key = str(e["subitem_id"])
 
             if lookup_key in bestehende_keys:
                 duplikate += 1

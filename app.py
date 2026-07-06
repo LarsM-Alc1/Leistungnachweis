@@ -24,6 +24,8 @@ from reportlab.lib.utils import ImageReader
 API_URL        = "https://api.monday.com/v2"
 BOARD_LEISTUNG = 5097778382
 STEUERUNGS_ITEM = "▶ Nachweise generieren"
+OHNE_AUFTRAG = "(ohne Auftrag)"
+ALLE_AUFTRAEGE = "Alle Aufträge"
 
 ALCANZAR_ROT = colors.HexColor("#7B2D42")
 GRAU_HELL    = colors.HexColor("#F5F5F5")
@@ -67,7 +69,11 @@ def monat_label(monat):
 
 @st.cache_data(ttl=300)
 def lade_monate_und_kunden():
-    """Lädt alle verfügbaren Monat/Kunde-Kombinationen dynamisch aus monday.com."""
+    """
+    Lädt alle verfügbaren Monat/Kunde/Auftrag-Kombinationen dynamisch aus monday.com.
+    Rückgabe: {monat: {kundenname: [auftrag_labels]}}
+    Leerer Auftrag wird als "(ohne Auftrag)" geführt.
+    """
     query = """
     query($board_id: ID!, $cursor: String) {
       boards(ids: [$board_id]) {
@@ -75,7 +81,7 @@ def lade_monate_und_kunden():
           cursor
           items {
             id name
-            column_values(ids: ["date_mm3zzepy", "board_relation_mm3z3jnk"]) {
+            column_values(ids: ["date_mm3zzepy", "board_relation_mm3z3jnk", "dropdown_mm50zhnf"]) {
               id text value
               ... on BoardRelationValue { linked_items { id name } }
             }
@@ -84,7 +90,7 @@ def lade_monate_und_kunden():
       }
     }
     """
-    ergebnisse = defaultdict(set)
+    ergebnisse = defaultdict(lambda: defaultdict(set))
     cursor = None
     while True:
         data = gql(query, {"board_id": str(BOARD_LEISTUNG), "cursor": cursor})
@@ -99,11 +105,15 @@ def lade_monate_und_kunden():
             linked = col.get("board_relation_mm3z3jnk", {}).get("linked_items") or []
             if not linked:
                 continue
-            ergebnisse[datum].add(linked[0]["name"])
+            auftrag = (col.get("dropdown_mm50zhnf", {}).get("text") or "").strip() or OHNE_AUFTRAG
+            ergebnisse[datum][linked[0]["name"]].add(auftrag)
         cursor = page.get("cursor")
         if not cursor:
             break
-    return {k: sorted(v) for k, v in sorted(ergebnisse.items(), reverse=True)}
+    return {
+        monat: {kunde: sorted(auftraege) for kunde, auftraege in sorted(kunden.items())}
+        for monat, kunden in sorted(ergebnisse.items(), reverse=True)
+    }
 
 @st.cache_data(ttl=60)
 def lade_eintraege(monat, kundenname):
@@ -121,7 +131,8 @@ def lade_eintraege(monat, kundenname):
             column_values(ids: [
               "date_mm3zzepy", "multiple_person_mm3zpgmx",
               "text_mm3zzr65", "numeric_mm3zfzkc",
-              "color_mm3znz4s", "board_relation_mm3z3jnk"
+              "color_mm3znz4s", "board_relation_mm3z3jnk",
+              "dropdown_mm50zhnf"
             ]) {
               id text value
               ... on BoardRelationValue { linked_items { id name } }
@@ -160,6 +171,7 @@ def lade_eintraege(monat, kundenname):
                 "leistung":     col.get("text_mm3zzr65", {}).get("text") or "",
                 "stunden":      stunden,
                 "verrechenbar": verrechenbar,
+                "auftrag":      (col.get("dropdown_mm50zhnf", {}).get("text") or "").strip(),
             })
         cursor = page.get("cursor")
         if not cursor:
@@ -168,7 +180,7 @@ def lade_eintraege(monat, kundenname):
 
 # ── PDF erstellen ─────────────────────────────────────────────────────────────
 
-def erstelle_pdf(kundenname, eintraege, monat):
+def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
     heute = date.today().strftime("%d.%m.%Y")
     ml_label = monat_label(monat)
     W, H = A4
@@ -204,7 +216,15 @@ def erstelle_pdf(kundenname, eintraege, monat):
     c.setFont("Helvetica", 9); c.drawString(ML+103*mm, y, ml_label)
     c.setFont("Helvetica-Bold", 9); c.drawString(ML+140*mm, y, "Erstellt:")
     c.setFont("Helvetica", 9); c.drawString(ML+154*mm, y, heute)
-    y -= 8*mm
+    y -= 6*mm
+
+    # Auftrag (nur wenn ein konkreter Auftrag gewählt wurde)
+    if auftrag_label:
+        c.setFont("Helvetica-Bold", 9); c.setFillColor(GRAU_DUNKEL)
+        c.drawString(ML, y, "Auftrag:")
+        c.setFont("Helvetica", 9); c.drawString(ML+14*mm, y, auftrag_label)
+        y -= 6*mm
+    y -= 2*mm
 
     # Tabelle
     row_h = 8*mm
@@ -369,8 +389,16 @@ monat_labels = [monat_label(m) for m in monate]
 sel_label = st.selectbox("Monat", monat_labels, index=0)
 sel_monat = monate[monat_labels.index(sel_label)]
 
-kunden    = verfuegbar.get(sel_monat, [])
+kunden    = list(verfuegbar.get(sel_monat, {}).keys())
 sel_kunde = st.selectbox("Kunde", kunden)
+
+# Auftrag-Auswahl — nur anzeigen, wenn der Kunde überhaupt Aufträge hat
+auftraege_vorhanden = verfuegbar.get(sel_monat, {}).get(sel_kunde, [])
+echte_auftraege = [a for a in auftraege_vorhanden if a != OHNE_AUFTRAG]
+if echte_auftraege:
+    sel_auftrag = st.selectbox("Auftrag", [ALLE_AUFTRAEGE] + auftraege_vorhanden)
+else:
+    sel_auftrag = ALLE_AUFTRAEGE
 
 st.divider()
 
@@ -382,21 +410,37 @@ if st.button("📄 PDF generieren", type="primary", use_container_width=True):
             st.error(f"Fehler: {e}")
             st.stop()
 
+    # Nach gewähltem Auftrag filtern
+    if sel_auftrag != ALLE_AUFTRAEGE:
+        if sel_auftrag == OHNE_AUFTRAG:
+            eintraege = [e for e in eintraege if not e["auftrag"]]
+        else:
+            eintraege = [e for e in eintraege if e["auftrag"] == sel_auftrag]
+
     if not eintraege:
-        st.warning("Keine verrechenbaren Einträge für diesen Kunden im gewählten Monat.")
+        hinweis = f" (Auftrag: {sel_auftrag})" if sel_auftrag != ALLE_AUFTRAEGE else ""
+        st.warning(f"Keine verrechenbaren Einträge für diesen Kunden im gewählten Monat{hinweis}.")
         st.stop()
 
     gesamt = sum(e["stunden"] for e in eintraege)
 
+    # Auftrag im PDF nur als Kopfzeile zeigen, wenn ein konkreter Auftrag gewählt wurde
+    pdf_auftrag = sel_auftrag if sel_auftrag not in (ALLE_AUFTRAEGE, OHNE_AUFTRAG) else None
+
     with st.spinner("Erstelle PDF..."):
-        pdf_bytes = erstelle_pdf(sel_kunde, eintraege, sel_monat)
+        pdf_bytes = erstelle_pdf(sel_kunde, eintraege, sel_monat, auftrag_label=pdf_auftrag)
 
     c1, c2 = st.columns(2)
     c1.metric("Verrechenbare Einträge", len(eintraege))
     c2.metric("Stunden gesamt", f"{gesamt:.2f} h".replace(".",","))
 
     sicher = "".join(ch if ch.isalnum() or ch in " -_" else "_" for ch in sel_kunde).strip()
-    dateiname = f"Leistungsnachweis_{sel_monat}_{sicher}.pdf"
+    auftrag_teil = ""
+    if sel_auftrag not in (ALLE_AUFTRAEGE, OHNE_AUFTRAG):
+        kurz = sel_auftrag.replace("Auftrag:", "").strip()
+        kurz = "".join(ch if ch.isalnum() or ch in " -_" else "_" for ch in kurz).strip()
+        auftrag_teil = f"_{kurz}"
+    dateiname = f"Leistungsnachweis_{sel_monat}_{sicher}{auftrag_teil}.pdf"
 
     st.success(f"PDF erstellt — {len(eintraege)} Einträge, {gesamt:.2f} h verrechenbar")
     st.download_button(
@@ -417,7 +461,8 @@ if st.button("📄 PDF generieren", type="primary", use_container_width=True):
         key="empfaenger_email"
     )
 
-    betreff = f"Leistungsnachweis {sel_label} – {sel_kunde}"
+    betreff_auftrag = f" ({sel_auftrag})" if sel_auftrag not in (ALLE_AUFTRAEGE, OHNE_AUFTRAG) else ""
+    betreff = f"Leistungsnachweis {sel_label} – {sel_kunde}{betreff_auftrag}"
     body = (
         f"Sehr geehrte Damen und Herren,%0D%0A%0D%0A"
         f"im Anhang erhalten Sie den Leistungsnachweis für {sel_label}.%0D%0A%0D%0A"
