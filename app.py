@@ -497,6 +497,8 @@ else:
 
 st.divider()
 
+sel_key = (sel_monat, sel_kunde, sel_auftrag)
+
 if st.button("📄 PDF generieren", type="primary", use_container_width=True):
     with st.spinner(f"Lade Einträge für {sel_kunde}..."):
         try:
@@ -525,24 +527,11 @@ if st.button("📄 PDF generieren", type="primary", use_container_width=True):
             ki_aenderungen.append({"datum": e["datum"], "alt": e["leistung"], "neu": neu})
             e["leistung"] = neu
 
-    if ki_aenderungen:
-        with st.expander(f"⚠️ {len(ki_aenderungen)} Eintrag/Einträge mit KI-Bezug neutralisiert", expanded=True):
-            st.caption("Diese Hinweise auf KI-Tools wurden im PDF durch eine neutrale Formulierung "
-                       "ersetzt. Die Quelle in monday.com bleibt unverändert — bei Bedarf dort anpassen.")
-            for a in ki_aenderungen:
-                st.markdown(f"- **{a['datum']}**: ~~{a['alt']}~~ → **{a['neu']}**")
-
     gesamt = sum(e["stunden"] for e in eintraege)
-
-    # Auftrag im PDF nur als Kopfzeile zeigen, wenn ein konkreter Auftrag gewählt wurde
     pdf_auftrag = sel_auftrag if sel_auftrag not in (ALLE_AUFTRAEGE, OHNE_AUFTRAG) else None
 
     with st.spinner("Erstelle PDF..."):
         pdf_bytes = erstelle_pdf(sel_kunde, eintraege, sel_monat, auftrag_label=pdf_auftrag)
-
-    c1, c2 = st.columns(2)
-    c1.metric("Verrechenbare Einträge", len(eintraege))
-    c2.metric("Stunden gesamt", f"{gesamt:.2f} h".replace(".",","))
 
     sicher = "".join(ch if ch.isalnum() or ch in " -_" else "_" for ch in sel_kunde).strip()
     auftrag_teil = ""
@@ -552,15 +541,73 @@ if st.button("📄 PDF generieren", type="primary", use_container_width=True):
         auftrag_teil = f"_{kurz}"
     dateiname = f"Leistungsnachweis_{sel_monat}_{sicher}{auftrag_teil}.pdf"
 
-    st.success(f"PDF erstellt — {len(eintraege)} Einträge, {gesamt:.2f} h verrechenbar")
+    # Ergebnis merken — bleibt über Reruns (Download, Mail) hinweg erhalten
+    st.session_state["pdf_result"] = {
+        "key": sel_key, "bytes": pdf_bytes, "name": dateiname,
+        "n": len(eintraege), "gesamt": gesamt, "ki": ki_aenderungen,
+        "monat_label": sel_label, "kunde": sel_kunde, "auftrag": pdf_auftrag,
+    }
+
+# ── Ergebnis anzeigen (unabhängig vom Button-Klick, damit es erhalten bleibt) ──
+res = st.session_state.get("pdf_result")
+if res and res["key"] != sel_key:
+    st.info("Auswahl geändert — bitte erneut auf „📄 PDF generieren" klicken, "
+            "um den Nachweis für die aktuelle Auswahl zu erzeugen.")
+elif res:
+    gstr = f"{res['gesamt']:.2f}".replace(".", ",")
+
+    if res["ki"]:
+        with st.expander(f"⚠️ {len(res['ki'])} Eintrag/Einträge mit KI-Bezug neutralisiert", expanded=True):
+            st.caption("Diese Hinweise auf KI-Tools wurden im PDF durch eine neutrale Formulierung "
+                       "ersetzt. Die Quelle in monday.com bleibt unverändert — bei Bedarf dort anpassen.")
+            for a in res["ki"]:
+                st.markdown(f"- **{a['datum']}**: ~~{a['alt']}~~ → **{a['neu']}**")
+
+    c1, c2 = st.columns(2)
+    c1.metric("Verrechenbare Einträge", res["n"])
+    c2.metric("Stunden gesamt", f"{gstr} h")
+
+    st.success(f"PDF erstellt — {res['n']} Einträge, {gstr} h verrechenbar")
     st.download_button(
         label="⬇️ PDF herunterladen",
-        data=pdf_bytes,
-        file_name=dateiname,
+        data=res["bytes"],
+        file_name=res["name"],
         mime="application/pdf",
         use_container_width=True,
         type="primary",
     )
+    st.caption(f"Gespeichert als **{res['name']}** — zur Weitergabe an den Innendienst "
+               "für die Abrechnung.")
 
-    st.caption(f"Gespeichert als **{dateiname}** — zur Weitergabe an den Innendienst "
-               "für den Versand mit der Rechnung.")
+    # Übergangslösung: PDF per Outlook an den Innendienst
+    with st.expander("📧 Per Outlook an den Innendienst senden"):
+        if "empf_innendienst" not in st.session_state:
+            try:
+                st.session_state["empf_innendienst"] = st.secrets.get("INNENDIENST_EMAIL", "")
+            except Exception:
+                st.session_state["empf_innendienst"] = ""
+        empf = st.text_input("E-Mail Innendienst", key="empf_innendienst",
+                             placeholder="kollegin@alcanzar.de")
+        betreff = f"Leistungsnachweis {res['monat_label']} – {res['kunde']}"
+        if res["auftrag"]:
+            betreff += f" ({res['auftrag']})"
+        body = (
+            f"Hallo,%0D%0A%0D%0A"
+            f"anbei der Leistungsnachweis für {res['kunde']}, {res['monat_label']}, zur Abrechnung.%0D%0A"
+            f"Verrechenbare Stunden gesamt: {gstr} h.%0D%0A%0D%0A"
+            f"Viele Grüße"
+        )
+        mailto = f"mailto:{empf}?subject={betreff}&body={body}"
+        st.markdown(
+            f'''<a href="{mailto}" target="_blank">
+                <button style="
+                    width:100%; padding:10px; font-size:15px; font-weight:600;
+                    background:#1C2D50; color:white; border:none; border-radius:12px;
+                    cursor:pointer; margin-top:4px;">
+                    📨 Outlook öffnen
+                </button>
+            </a>''',
+            unsafe_allow_html=True
+        )
+        st.caption(f"Bitte das PDF **{res['name']}** aus dem Download-Ordner als Anhang hinzufügen "
+                   "(ein Mail-Link kann keine Datei automatisch anhängen).")
