@@ -422,50 +422,8 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
     c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
     c.drawString(ML, y, "Ja = verrechenbar  ·  tw. = teilweise verrechenbar  ·  "
                         f"Verrechenbare Stunden gesamt: {gesamt_str} h")
-    y -= 15*mm
 
-    # Bestätigungsblock zusammenhalten (sonst neue Seite)
-    if y - 26*mm < UNTEN:
-        fusszeile(); c.showPage(); y = kopfbereich(False)
-
-    c.setFont(F_SEMI, 11); c.setFillColor(MITTERNACHTSBLAU)
-    c.drawString(ML, y, "Bestätigung"); y -= 11*mm
-
-    cb_size = 13
-    cb_x = ML
-    cb_y = y - cb_size
-
-    c.acroForm.checkbox(
-        name="leistung_bestaetigt", tooltip="Leistung bestätigt",
-        x=cb_x, y=cb_y, size=cb_size, checked=False, buttonStyle="check",
-        borderColor=FRISCHGRUEN, fillColor=SCHNEEWEISS,
-        textColor=MITTERNACHTSBLAU, forceBorder=True,
-    )
-    c.setFont(F_REG, 10); c.setFillColor(MITTERNACHTSBLAU)
-    c.drawString(cb_x+cb_size+4, cb_y+2.5, "Leistung bestätigt")
-
-    name_x = ML+55*mm; name_w = 80*mm; name_h = 13
-    c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
-    c.drawString(name_x, cb_y+name_h+3, "Name")
-    c.acroForm.textfield(
-        name="name", tooltip="Name des Unterzeichners",
-        x=name_x, y=cb_y, width=name_w, height=name_h,
-        borderWidth=0, fillColor=PORZELLAN, borderColor=PORZELLAN,
-        textColor=MITTERNACHTSBLAU, fontSize=10, fontName="Helvetica",
-        borderStyle="solid",
-    )
-
-    dat_x = ML+143*mm; dat_w = 27*mm; dat_h = 13
-    c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
-    c.drawString(dat_x, cb_y+dat_h+3, "Datum")
-    c.acroForm.textfield(
-        name="datum", tooltip="Datum der Bestätigung",
-        x=dat_x, y=cb_y, width=dat_w, height=dat_h,
-        borderWidth=0, fillColor=PORZELLAN, borderColor=PORZELLAN,
-        textColor=MITTERNACHTSBLAU, fontSize=10, fontName="Helvetica",
-        borderStyle="solid",
-    )
-
+    # Dokument endet nach Summe + Legende (Rechnungsanlage, keine Unterschrift nötig).
     fusszeile()
     c.save()
     return buf.getvalue()
