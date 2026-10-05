@@ -44,8 +44,8 @@ BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 FONT_DIR  = os.path.join(BASE_DIR, "fonts")
 BRAND_DIR = os.path.join(BASE_DIR, "brand")
 LOGO_PATH = os.path.join(BRAND_DIR, "alcanzar-logo.png")
-SCHWINGE_BLAU  = os.path.join(BRAND_DIR, "schwinge-blau-oben.svg")
-SCHWINGE_GRUEN = os.path.join(BRAND_DIR, "schwinge-gruen-unten.svg")
+SCHWINGE_BLAU  = os.path.join(BRAND_DIR, "schwinge-blau.png")   # Deckkraft bereits eingebacken
+SCHWINGE_GRUEN = os.path.join(BRAND_DIR, "schwinge-gruen.png")
 
 MONATE_DE = ["Januar","Februar","März","April","Mai","Juni",
              "Juli","August","September","Oktober","November","Dezember"]
@@ -208,32 +208,18 @@ def lade_eintraege(monat, kundenname):
 
 # ── PDF-Bausteine ───────────────────────────────────────────────────────────
 
-def _set_opacity(node, alpha):
-    """Deckkraft rekursiv auf alle Formen einer svglib-Zeichnung setzen.
-    (setFillAlpha der Canvas greift bei renderPDF-Zeichnungen nicht.)"""
-    for obj in getattr(node, "contents", []):
-        _set_opacity(obj, alpha)
-    if hasattr(node, "fillOpacity"):
-        node.fillOpacity = alpha
-    if hasattr(node, "strokeOpacity"):
-        node.strokeOpacity = alpha
-
-def _draw_schwinge(c, path, x, y, target_w, alpha):
-    """Zeichnet eine Schwingen-Grafik (SVG) dezent als Markenelement."""
+def _draw_schwinge(c, path, x, y, target_w):
+    """Zeichnet eine Schwingen-Grafik (faint PNG) dezent als Markenelement."""
     try:
-        from svglib.svglib import svg2rlg
-        from reportlab.graphics import renderPDF
-        d = svg2rlg(path)
-        if not d or not d.width:
+        if not os.path.exists(path):
             return
-        s = target_w / d.width
-        d.scale(s, s)
-        d.width *= s
-        d.height *= s
-        _set_opacity(d, alpha)
-        renderPDF.draw(d, c, x, y)
+        img = ImageReader(path)
+        iw, ih = img.getSize()
+        h = target_w * ih / iw
+        c.drawImage(img, x, y, width=target_w, height=h, mask='auto',
+                    preserveAspectRatio=True)
     except Exception:
-        # Deko ist optional — ein fehlendes SVG darf das PDF nie sprengen.
+        # Deko ist optional — ein fehlendes Bild darf das PDF nie sprengen.
         pass
 
 # ── PDF erstellen ─────────────────────────────────────────────────────────────
@@ -249,8 +235,8 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
     c = rl_canvas.Canvas(buf, pagesize=A4)
 
     # Schwingen-Deko (dezent, im Hintergrund — zuerst zeichnen)
-    _draw_schwinge(c, SCHWINGE_BLAU,  W-55*mm, H-48*mm, 70*mm, 0.06)
-    _draw_schwinge(c, SCHWINGE_GRUEN, W-78*mm, 2*mm, 95*mm, 0.16)
+    _draw_schwinge(c, SCHWINGE_BLAU,  W-55*mm, H-48*mm, 70*mm)
+    _draw_schwinge(c, SCHWINGE_GRUEN, W-78*mm, 2*mm, 95*mm)
 
     y = H - 15*mm
 
