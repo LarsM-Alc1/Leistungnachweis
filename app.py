@@ -4,6 +4,9 @@ Streamlit Community Cloud App
 
 Kunden und Monate werden dynamisch aus monday.com geladen.
 Neue Einträge erscheinen automatisch ohne Anpassung.
+
+Corporate Design (Stand 10/2026): Mitternachtsblau, Frischgrün, Porzellan,
+Schneeweiß · Schrift Manrope · keine Rahmen, runde Ecken, Schwingen-Deko.
 """
 
 import io
@@ -18,6 +21,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 # ── Konfiguration ─────────────────────────────────────────────────────────────
 
@@ -27,15 +32,38 @@ STEUERUNGS_ITEM = "▶ Nachweise generieren"
 OHNE_AUFTRAG = "(ohne Auftrag)"
 ALLE_AUFTRAEGE = "Alle Aufträge"
 
-ALCANZAR_ROT = colors.HexColor("#7B2D42")
-GRAU_HELL    = colors.HexColor("#F5F5F5")
-GRAU_MITTEL  = colors.HexColor("#CCCCCC")
-GRAU_DUNKEL  = colors.HexColor("#555555")
+# ── Corporate Design — vier Markenfarben, mehr gibt es nicht ────────────────────
+MITTERNACHTSBLAU = colors.HexColor("#1C2D50")   # Text, Überschriften, dunkle Flächen
+FRISCHGRUEN      = colors.HexColor("#76B82A")   # Akzent
+PORZELLAN        = colors.HexColor("#F7F7F7")   # gedämpfte Flächen, Zebra
+SCHNEEWEISS      = colors.white
+BLAU_60          = colors.Color(28/255, 45/255, 80/255, alpha=0.60)  # gedämpfter Text
+BLAU_10          = colors.Color(28/255, 45/255, 80/255, alpha=0.10)  # feine Linie (Ausnahme)
 
-LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "alcanzar-logo-rgb.png")
+BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
+FONT_DIR  = os.path.join(BASE_DIR, "fonts")
+BRAND_DIR = os.path.join(BASE_DIR, "brand")
+LOGO_PATH = os.path.join(BRAND_DIR, "alcanzar-logo.png")
+SCHWINGE_BLAU  = os.path.join(BRAND_DIR, "schwinge-blau-oben.svg")
+SCHWINGE_GRUEN = os.path.join(BRAND_DIR, "schwinge-gruen-unten.svg")
 
 MONATE_DE = ["Januar","Februar","März","April","Mai","Juni",
              "Juli","August","September","Oktober","November","Dezember"]
+
+# ── Schrift registrieren (Manrope, mit Fallback auf Helvetica) ──────────────────
+
+def _register_fonts():
+    try:
+        pdfmetrics.registerFont(TTFont("Manrope",          os.path.join(FONT_DIR, "Manrope-400.ttf")))
+        pdfmetrics.registerFont(TTFont("Manrope-SemiBold", os.path.join(FONT_DIR, "Manrope-600.ttf")))
+        pdfmetrics.registerFont(TTFont("Manrope-Bold",     os.path.join(FONT_DIR, "Manrope-700.ttf")))
+        pdfmetrics.registerFontFamily(
+            "Manrope", normal="Manrope", bold="Manrope-Bold", italic="Manrope", boldItalic="Manrope-Bold")
+        return "Manrope", "Manrope-SemiBold", "Manrope-Bold"
+    except Exception:
+        return "Helvetica", "Helvetica-Bold", "Helvetica-Bold"
+
+F_REG, F_SEMI, F_BOLD = _register_fonts()
 
 # ── Hilfsfunktionen ───────────────────────────────────────────────────────────
 
@@ -178,6 +206,36 @@ def lade_eintraege(monat, kundenname):
             break
     return sorted(eintraege, key=lambda x: x["datum"])
 
+# ── PDF-Bausteine ───────────────────────────────────────────────────────────
+
+def _set_opacity(node, alpha):
+    """Deckkraft rekursiv auf alle Formen einer svglib-Zeichnung setzen.
+    (setFillAlpha der Canvas greift bei renderPDF-Zeichnungen nicht.)"""
+    for obj in getattr(node, "contents", []):
+        _set_opacity(obj, alpha)
+    if hasattr(node, "fillOpacity"):
+        node.fillOpacity = alpha
+    if hasattr(node, "strokeOpacity"):
+        node.strokeOpacity = alpha
+
+def _draw_schwinge(c, path, x, y, target_w, alpha):
+    """Zeichnet eine Schwingen-Grafik (SVG) dezent als Markenelement."""
+    try:
+        from svglib.svglib import svg2rlg
+        from reportlab.graphics import renderPDF
+        d = svg2rlg(path)
+        if not d or not d.width:
+            return
+        s = target_w / d.width
+        d.scale(s, s)
+        d.width *= s
+        d.height *= s
+        _set_opacity(d, alpha)
+        renderPDF.draw(d, c, x, y)
+    except Exception:
+        # Deko ist optional — ein fehlendes SVG darf das PDF nie sprengen.
+        pass
+
 # ── PDF erstellen ─────────────────────────────────────────────────────────────
 
 def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
@@ -189,56 +247,71 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
 
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=A4)
+
+    # Schwingen-Deko (dezent, im Hintergrund — zuerst zeichnen)
+    _draw_schwinge(c, SCHWINGE_BLAU,  W-55*mm, H-48*mm, 70*mm, 0.06)
+    _draw_schwinge(c, SCHWINGE_GRUEN, W-78*mm, 2*mm, 95*mm, 0.16)
+
     y = H - 15*mm
 
     # Logo + Adresse
     if os.path.exists(LOGO_PATH):
         logo_img = ImageReader(LOGO_PATH)
-        c.drawImage(logo_img, ML, y-15*mm, width=55*mm, height=15*mm,
-                    preserveAspectRatio=True, mask='auto')
-    c.setFont("Helvetica", 8); c.setFillColor(GRAU_DUNKEL)
-    c.drawRightString(ML+TW, y-6*mm,  "Alcanzar GmbH · Fritz-Haber-Straße 9 · 06217 Merseburg")
-    c.drawRightString(ML+TW, y-12*mm, "Tel: 03461 7949251 · info@alcanzar.de · www.alcanzar.de")
+        # Logo-Seitenverhältnis ≈ 4,43:1 → 55 mm Breite ≈ 12,4 mm Höhe
+        c.drawImage(logo_img, ML, y-13*mm, width=55*mm, height=13*mm,
+                    preserveAspectRatio=True, anchor='sw', mask='auto')
+    c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
+    c.drawRightString(ML+TW, y-5*mm,  "Alcanzar GmbH · Fritz-Haber-Straße 9 · 06217 Merseburg")
+    c.drawRightString(ML+TW, y-11*mm, "Tel: 03461 7949251 · info@alcanzar.de · www.alcanzar.de")
     y -= 20*mm
 
-    c.setStrokeColor(ALCANZAR_ROT); c.setLineWidth(1.5)
-    c.line(ML, y, ML+TW, y); y -= 8*mm
+    # Akzentlinie Frischgrün
+    c.setStrokeColor(FRISCHGRUEN); c.setLineWidth(2)
+    c.line(ML, y, ML+TW, y); y -= 10*mm
 
     # Titel
-    c.setFont("Helvetica-Bold", 14); c.setFillColor(ALCANZAR_ROT)
-    c.drawString(ML, y, "Leistungsnachweis"); y -= 7*mm
+    c.setFont(F_BOLD, 17); c.setFillColor(MITTERNACHTSBLAU)
+    c.drawString(ML, y, "Leistungsnachweis"); y -= 9*mm
 
     # Meta
-    c.setFont("Helvetica-Bold", 9); c.setFillColor(GRAU_DUNKEL)
-    c.drawString(ML, y, "Kunde:")
-    c.setFont("Helvetica", 9); c.drawString(ML+14*mm, y, kundenname)
-    c.setFont("Helvetica-Bold", 9); c.drawString(ML+85*mm, y, "Zeitraum:")
-    c.setFont("Helvetica", 9); c.drawString(ML+103*mm, y, ml_label)
-    c.setFont("Helvetica-Bold", 9); c.drawString(ML+140*mm, y, "Erstellt:")
-    c.setFont("Helvetica", 9); c.drawString(ML+154*mm, y, heute)
-    y -= 6*mm
+    c.setFont(F_SEMI, 10); c.setFillColor(BLAU_60)
+    c.drawString(ML, y, "Kunde")
+    c.setFont(F_REG, 10); c.setFillColor(MITTERNACHTSBLAU)
+    c.drawString(ML+16*mm, y, kundenname)
+    c.setFont(F_SEMI, 10); c.setFillColor(BLAU_60)
+    c.drawString(ML+92*mm, y, "Zeitraum")
+    c.setFont(F_REG, 10); c.setFillColor(MITTERNACHTSBLAU)
+    c.drawString(ML+112*mm, y, ml_label)
+    c.setFont(F_SEMI, 10); c.setFillColor(BLAU_60)
+    c.drawString(ML+145*mm, y, "Erstellt")
+    c.setFont(F_REG, 10); c.setFillColor(MITTERNACHTSBLAU)
+    c.drawString(ML+161*mm, y, heute)
+    y -= 6.5*mm
 
     # Auftrag (nur wenn ein konkreter Auftrag gewählt wurde)
     if auftrag_label:
-        c.setFont("Helvetica-Bold", 9); c.setFillColor(GRAU_DUNKEL)
-        c.drawString(ML, y, "Auftrag:")
-        c.setFont("Helvetica", 9); c.drawString(ML+14*mm, y, auftrag_label)
-        y -= 6*mm
-    y -= 2*mm
+        c.setFont(F_SEMI, 10); c.setFillColor(BLAU_60)
+        c.drawString(ML, y, "Auftrag")
+        c.setFont(F_REG, 10); c.setFillColor(MITTERNACHTSBLAU)
+        c.drawString(ML+16*mm, y, auftrag_label)
+        y -= 6.5*mm
+    y -= 3*mm
 
     # Tabelle
-    row_h = 8*mm
-    col_w = [25*mm, 35*mm, TW-25*mm-35*mm-18*mm-12*mm, 18*mm, 12*mm]
+    row_h = 9*mm
+    col_w = [25*mm, 35*mm, TW-25*mm-35*mm-18*mm-14*mm, 18*mm, 14*mm]
     col_x = [ML] + [ML+sum(col_w[:i+1]) for i in range(len(col_w)-1)]
+    radius = 2.5*mm
 
-    # Header
-    c.setFillColor(ALCANZAR_ROT)
-    c.rect(ML, y-row_h, TW, row_h, fill=1, stroke=0)
-    c.setFillColor(colors.white); c.setFont("Helvetica-Bold", 9)
+    # Header — Mitternachtsblau, runde obere Ecken, weiße Schrift
+    c.setFillColor(MITTERNACHTSBLAU)
+    c.roundRect(ML, y-row_h, TW, row_h+radius, radius, fill=1, stroke=0)
+    c.rect(ML, y-row_h, TW, row_h-radius+0.5, fill=1, stroke=0)  # untere Kante bündig
+    c.setFillColor(SCHNEEWEISS); c.setFont(F_SEMI, 10)
     for i,(hdr,cx,cw) in enumerate(zip(
             ["Datum","Mitarbeiter/in","Leistungsbeschreibung","Std.","Verr."],col_x,col_w)):
-        if i>=3: c.drawRightString(cx+cw-2, y-row_h+2.5*mm, hdr)
-        else:    c.drawString(cx+2, y-row_h+2.5*mm, hdr)
+        if i>=3: c.drawRightString(cx+cw-3, y-row_h+3*mm, hdr)
+        else:    c.drawString(cx+3, y-row_h+3*mm, hdr)
     y -= row_h
     tab_top = y
 
@@ -246,23 +319,23 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
     for idx, e in enumerate(eintraege):
         d  = date.fromisoformat(e["datum"])
         sh = f"{e['stunden']:.2f}".replace(".",",")
-        vs = "✓" if e["verrechenbar"]=="Ja" else "~"
+        vs = "Ja" if e["verrechenbar"]=="Ja" else "tw."
         gesamt += e["stunden"]
-        rh = 8*mm; ry = y-rh
+        rh = 9*mm; ry = y-rh
         if idx%2==1:
-            c.setFillColor(GRAU_HELL); c.rect(ML, ry, TW, rh, fill=1, stroke=0)
-        c.setFillColor(GRAU_DUNKEL); c.setFont("Helvetica", 9)
-        c.drawString(col_x[0]+2, ry+2*mm, d.strftime("%d.%m.%Y"))
-        c.drawString(col_x[1]+2, ry+2*mm, e["mitarbeiter"])
+            c.setFillColor(PORZELLAN); c.rect(ML, ry, TW, rh, fill=1, stroke=0)
+        c.setFillColor(MITTERNACHTSBLAU); c.setFont(F_REG, 10)
+        c.drawString(col_x[0]+3, ry+2.8*mm, d.strftime("%d.%m.%Y"))
+        c.drawString(col_x[1]+3, ry+2.8*mm, e["mitarbeiter"])
         # Mehrzeilig umbrechen wenn nötig
         leistung = e["leistung"]
-        max_w = col_w[2] - 4
+        max_w = col_w[2] - 6
         words = leistung.split()
         lines = []
         line = ""
         for word in words:
             test = (line + " " + word).strip()
-            if c.stringWidth(test, "Helvetica", 9) <= max_w:
+            if c.stringWidth(test, F_REG, 10) <= max_w:
                 line = test
             else:
                 if line: lines.append(line)
@@ -270,88 +343,79 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
         if line: lines.append(line)
         lines = lines[:2]  # max 2 Zeilen
         if len(lines) == 2:
-            c.drawString(col_x[2]+2, ry+3.5*mm, lines[0])
-            c.drawString(col_x[2]+2, ry+0.5*mm, lines[1])
+            c.drawString(col_x[2]+3, ry+4.5*mm, lines[0])
+            c.drawString(col_x[2]+3, ry+1.1*mm, lines[1])
         else:
-            c.drawString(col_x[2]+2, ry+2*mm, lines[0] if lines else "")
-        c.drawRightString(col_x[3]+col_w[3]-2, ry+2*mm, sh)
-        c.drawRightString(col_x[4]+col_w[4]-2, ry+2*mm, vs)
-        c.setStrokeColor(GRAU_MITTEL); c.setLineWidth(0.3)
-        c.line(ML, ry, ML+TW, ry)
+            c.drawString(col_x[2]+3, ry+2.8*mm, lines[0] if lines else "")
+        c.drawRightString(col_x[3]+col_w[3]-3, ry+2.8*mm, sh)
+        # "Verr." farblich: Ja = Frischgrün, tw. = gedämpftes Blau
+        c.setFillColor(FRISCHGRUEN if e["verrechenbar"]=="Ja" else BLAU_60)
+        c.setFont(F_SEMI, 10)
+        c.drawRightString(col_x[4]+col_w[4]-3, ry+2.8*mm, vs)
         y -= rh
 
-    # Summe
-    c.setFillColor(GRAU_HELL); c.rect(ML, y-7*mm, TW, 7*mm, fill=1, stroke=0)
-    c.setStrokeColor(ALCANZAR_ROT); c.setLineWidth(1); c.line(ML, y, ML+TW, y)
-    c.setFont("Helvetica-Bold", 9); c.setFillColor(colors.black)
-    c.drawString(col_x[2]+2, y-5*mm, "Gesamt verrechenbar")
-    c.drawRightString(col_x[3]+col_w[3]-2, y-5*mm, f"{gesamt:.2f}".replace(".",","))
-    y -= 7*mm
-
-    # Rahmen
-    c.setStrokeColor(GRAU_MITTEL); c.setLineWidth(0.5)
-    c.rect(ML, y, TW, tab_top-y, fill=0, stroke=1)
-    y -= 4*mm
+    # Summe — Frischgrün-Band, Text Mitternachtsblau (CD-Farbpaar)
+    sum_h = 9*mm
+    c.setFillColor(FRISCHGRUEN); c.rect(ML, y-sum_h, TW, sum_h, fill=1, stroke=0)
+    c.setFont(F_BOLD, 10); c.setFillColor(MITTERNACHTSBLAU)
+    c.drawString(col_x[2]+3, y-sum_h+2.8*mm, "Gesamt verrechenbar")
+    c.drawRightString(col_x[3]+col_w[3]-3, y-sum_h+2.8*mm, f"{gesamt:.2f}".replace(".",","))
+    c.drawRightString(col_x[4]+col_w[4]-3, y-sum_h+2.8*mm, "h")
+    y -= sum_h + 5*mm
 
     # Legende
-    c.setFont("Helvetica", 8); c.setFillColor(GRAU_DUNKEL)
-    c.drawString(ML, y, f"✓ = verrechenbar  ·  ~ = teilweise verrechenbar  ·  Verrechenbare Stunden gesamt: {gesamt:.2f} h".replace(".",","))
-    y -= 10*mm
-
-    # Trennlinie
-    c.setStrokeColor(GRAU_MITTEL); c.setLineWidth(0.5)
-    c.line(ML, y, ML+TW, y); y -= 7*mm
+    gesamt_str = f"{gesamt:.2f}".replace(".", ",")
+    c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
+    c.drawString(ML, y, "Ja = verrechenbar  ·  tw. = teilweise verrechenbar  ·  "
+                        f"Verrechenbare Stunden gesamt: {gesamt_str} h")
+    y -= 12*mm
 
     # Bestätigung
-    c.setFont("Helvetica-Bold", 10); c.setFillColor(colors.black)
+    c.setFont(F_SEMI, 11); c.setFillColor(MITTERNACHTSBLAU)
     c.drawString(ML, y, "Bestätigung"); y -= 10*mm
 
-    cb_size = 12
+    cb_size = 13
     cb_x = ML
     cb_y = y - cb_size
 
     c.acroForm.checkbox(
         name="leistung_bestaetigt", tooltip="Leistung bestätigt",
         x=cb_x, y=cb_y, size=cb_size, checked=False, buttonStyle="check",
-        borderColor=ALCANZAR_ROT, fillColor=colors.white,
-        textColor=ALCANZAR_ROT, forceBorder=True,
+        borderColor=FRISCHGRUEN, fillColor=SCHNEEWEISS,
+        textColor=MITTERNACHTSBLAU, forceBorder=True,
     )
-    c.setFont("Helvetica", 9); c.setFillColor(GRAU_DUNKEL)
-    c.drawString(cb_x+cb_size+3, cb_y+2, "Leistung bestätigt")
+    c.setFont(F_REG, 10); c.setFillColor(MITTERNACHTSBLAU)
+    c.drawString(cb_x+cb_size+4, cb_y+2.5, "Leistung bestätigt")
 
     # Name
-    name_x = ML+50*mm; name_w = 85*mm; name_h = 12
-    c.setFont("Helvetica", 8); c.setFillColor(colors.HexColor("#999999"))
-    c.drawString(name_x, cb_y+name_h+2, "Name")
+    name_x = ML+55*mm; name_w = 80*mm; name_h = 13
+    c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
+    c.drawString(name_x, cb_y+name_h+3, "Name")
     c.acroForm.textfield(
         name="name", tooltip="Name des Unterzeichners",
         x=name_x, y=cb_y, width=name_w, height=name_h,
-        borderWidth=0, fillColor=colors.white, borderColor=GRAU_MITTEL,
-        textColor=colors.black, fontSize=9, fontName="Helvetica",
-        borderStyle="underlined",
+        borderWidth=0, fillColor=PORZELLAN, borderColor=PORZELLAN,
+        textColor=MITTERNACHTSBLAU, fontSize=10, fontName="Helvetica",
+        borderStyle="solid",
     )
-    c.setStrokeColor(GRAU_DUNKEL); c.setLineWidth(0.6)
-    c.line(name_x, cb_y, name_x+name_w, cb_y)
 
     # Datum
-    dat_x = ML+143*mm; dat_w = 27*mm; dat_h = 12
-    c.setFont("Helvetica", 8); c.setFillColor(colors.HexColor("#999999"))
-    c.drawString(dat_x, cb_y+dat_h+2, "Datum")
+    dat_x = ML+143*mm; dat_w = 27*mm; dat_h = 13
+    c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
+    c.drawString(dat_x, cb_y+dat_h+3, "Datum")
     c.acroForm.textfield(
         name="datum", tooltip="Datum der Bestätigung",
         x=dat_x, y=cb_y, width=dat_w, height=dat_h,
-        borderWidth=0, fillColor=colors.white, borderColor=GRAU_MITTEL,
-        textColor=colors.black, fontSize=9, fontName="Helvetica",
-        borderStyle="underlined",
+        borderWidth=0, fillColor=PORZELLAN, borderColor=PORZELLAN,
+        textColor=MITTERNACHTSBLAU, fontSize=10, fontName="Helvetica",
+        borderStyle="solid",
     )
-    c.setStrokeColor(GRAU_DUNKEL); c.setLineWidth(0.6)
-    c.line(dat_x, cb_y, dat_x+dat_w, cb_y)
 
-    # Fußzeile
-    c.setStrokeColor(GRAU_MITTEL); c.setLineWidth(0.5)
-    c.line(ML, 17*mm, ML+TW, 17*mm)
-    c.setFont("Helvetica", 8); c.setFillColor(colors.grey)
-    c.drawCentredString(W/2, 12*mm,
+    # Fußzeile (schlichte Adresszeile, 7 pt)
+    c.setStrokeColor(BLAU_10); c.setLineWidth(0.5)
+    c.line(ML, 16*mm, ML+TW, 16*mm)
+    c.setFont(F_REG, 7); c.setFillColor(BLAU_60)
+    c.drawCentredString(W/2, 11.5*mm,
         "Alcanzar GmbH · Fritz-Haber-Straße 9 · 06217 Merseburg")
 
     c.save()
@@ -361,12 +425,36 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
 
 st.set_page_config(
     page_title="Alcanzar Leistungsnachweis",
-    page_icon="alcanzar-logo-rgb.png",
+    page_icon=LOGO_PATH if os.path.exists(LOGO_PATH) else None,
     layout="centered",
 )
 
+# Corporate Design für die Oberfläche
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700&display=swap');
+html, body, [class*="css"], .stMarkdown, .stButton, .stSelectbox, .stTextInput {
+    font-family: 'Manrope', system-ui, sans-serif;
+}
+h1, h2, h3 { color: #1C2D50; font-weight: 700; }
+.stApp { background: #FFFFFF; }
+div[data-testid="stMetricValue"] { color: #1C2D50; }
+hr { border-color: rgba(28,45,80,.10); }
+/* Primär-Buttons in Mitternachtsblau */
+.stButton > button[kind="primary"],
+.stDownloadButton > button {
+    background-color: #1C2D50; color: #FFFFFF; border: none;
+    border-radius: 12px; font-weight: 600;
+}
+.stButton > button[kind="primary"]:hover,
+.stDownloadButton > button:hover {
+    background-color: #76B82A; color: #1C2D50;
+}
+</style>
+""", unsafe_allow_html=True)
+
 if os.path.exists(LOGO_PATH):
-    st.image(LOGO_PATH, width=260)
+    st.image(LOGO_PATH, width=280)
 
 st.title("Leistungsnachweis Generator")
 st.caption("Daten direkt aus monday.com — neue Kunden und Monate erscheinen automatisch.")
@@ -475,8 +563,8 @@ if st.button("📄 PDF generieren", type="primary", use_container_width=True):
     st.markdown(
         f'''<a href="{mailto}" target="_blank">
             <button style="
-                width:100%; padding:10px; font-size:15px; font-weight:500;
-                background:#0078D4; color:white; border:none; border-radius:6px;
+                width:100%; padding:10px; font-size:15px; font-weight:600;
+                background:#1C2D50; color:white; border:none; border-radius:12px;
                 cursor:pointer; margin-top:4px;">
                 📨 Outlook öffnen
             </button>

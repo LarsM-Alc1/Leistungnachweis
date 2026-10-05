@@ -9,7 +9,9 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 10
- 
+    permissions:
+      contents: write   # für den Keepalive-Commit (hält den Scheduler aktiv)
+
     steps:
       - name: Repo auschecken
         uses: actions/checkout@v4
@@ -30,3 +32,22 @@ jobs:
       - name: Ergebnis im Log festhalten
         if: always()
         run: echo "Sync abgeschlossen – $(date '+%Y-%m-%d %H:%M:%S UTC')"
+
+      - name: Keepalive – Repo aktiv halten
+        if: github.event_name == 'schedule'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          LAST=$(git log -1 --format=%ct)
+          NOW=$(date +%s)
+          DAYS=$(( (NOW - LAST) / 86400 ))
+          echo "Letzter Commit vor $DAYS Tagen."
+          # GitHub deaktiviert geplante Workflows nach 60 Tagen Repo-Inaktivität.
+          # Alle 50 Tage ein leerer Commit setzt den Zähler zurück (triggert selbst keinen Lauf).
+          if [ "$DAYS" -ge 50 ]; then
+            git commit --allow-empty -m "chore: keepalive – Scheduler aktiv halten"
+            git push
+            echo "Keepalive-Commit gesetzt."
+          else
+            echo "Kein Keepalive nötig."
+          fi
