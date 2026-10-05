@@ -551,7 +551,7 @@ if st.button("📄 PDF generieren", type="primary", use_container_width=True):
 # ── Ergebnis anzeigen (unabhängig vom Button-Klick, damit es erhalten bleibt) ──
 res = st.session_state.get("pdf_result")
 if res and res["key"] != sel_key:
-    st.info("Auswahl geändert — bitte erneut auf „📄 PDF generieren" klicken, "
+    st.info("Auswahl geändert — bitte erneut auf „PDF generieren“ klicken, "
             "um den Nachweis für die aktuelle Auswahl zu erzeugen.")
 elif res:
     gstr = f"{res['gesamt']:.2f}".replace(".", ",")
