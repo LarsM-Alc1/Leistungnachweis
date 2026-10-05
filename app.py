@@ -562,35 +562,5 @@ if st.button("📄 PDF generieren", type="primary", use_container_width=True):
         type="primary",
     )
 
-    # Outlook-Button
-    st.divider()
-    st.markdown("**📧 Per E-Mail versenden**")
-    empfaenger = st.text_input(
-        "Empfänger E-Mail (optional)",
-        placeholder="kunde@beispiel.de",
-        key="empfaenger_email"
-    )
-
-    betreff_auftrag = f" ({sel_auftrag})" if sel_auftrag not in (ALLE_AUFTRAEGE, OHNE_AUFTRAG) else ""
-    betreff = f"Leistungsnachweis {sel_label} – {sel_kunde}{betreff_auftrag}"
-    body = (
-        f"Sehr geehrte Damen und Herren,%0D%0A%0D%0A"
-        f"im Anhang erhalten Sie den Leistungsnachweis für {sel_label}.%0D%0A%0D%0A"
-        f"Bitte bestätigen Sie die erbrachten Leistungen und senden Sie das ausgefüllte Dokument zurück.%0D%0A%0D%0A"
-        f"Mit freundlichen Grüßen%0D%0AAlcanzar GmbH"
-    )
-
-    mailto = f"mailto:{empfaenger}?subject={betreff}&body={body}"
-
-    st.markdown(
-        f'''<a href="{mailto}" target="_blank">
-            <button style="
-                width:100%; padding:10px; font-size:15px; font-weight:600;
-                background:#1C2D50; color:white; border:none; border-radius:12px;
-                cursor:pointer; margin-top:4px;">
-                📨 Outlook öffnen
-            </button>
-        </a>''',
-        unsafe_allow_html=True
-    )
-    st.caption(f"💡 Das PDF liegt in deinem Download-Ordner als **{dateiname}** — einfach als Anhang in Outlook hinzufügen.")
+    st.caption(f"Gespeichert als **{dateiname}** — zur Weitergabe an den Innendienst "
+               "für den Versand mit der Rechnung.")
