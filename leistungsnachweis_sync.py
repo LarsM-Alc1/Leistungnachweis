@@ -67,6 +67,7 @@ COL_LN_VERRECHENBAR  = "color_mm3znz4s"
 COL_LN_STATUS        = "color_mm3ztsba"
 COL_LN_AUFTRAG       = "dropdown_mm50zhnf"
 COL_LN_SUBITEM_ID    = "text_mm50tftx"
+COL_LN_TAETIGKEIT    = "text_mm7vvx1v"   # Tätigkeit (z.B. Reisezeit) — für getrennte Ausweisung
 
 # Steuerungs-Item — wird beim Duplikat-Check ignoriert
 STEUERUNGS_ITEM_NAME = "▶ Nachweise generieren"
@@ -363,6 +364,7 @@ def lade_subitems(zeitraum_liste: list) -> tuple:
             "leistung": leistung,
             "verrechenbar": verrechenbar,
             "auftrag": auftrag,
+            "taetigkeit": taetigkeit,
         })
 
     return relevante, ohne_kunde
@@ -412,6 +414,7 @@ def lege_item_an(eintrag: dict, group_id: str, dry_run: bool) -> bool:
         COL_LN_STATUS:       {"label": "In Vorbereitung"},
         COL_LN_KUNDE:        {"item_ids": [int(eintrag["kunden_item_id"])]},
         COL_LN_SUBITEM_ID:   str(eintrag["subitem_id"]),
+        COL_LN_TAETIGKEIT:   eintrag.get("taetigkeit", "") or "",
     }
 
     # Auftrag setzen, sofern ein echter Auftrag gewählt wurde
@@ -451,6 +454,74 @@ def lege_item_an(eintrag: dict, group_id: str, dry_run: bool) -> bool:
     }
     gql(query, variables)
     return True
+
+
+# ── Tätigkeit nachtragen (einmaliger Backfill) ───────────────────────────────
+
+def setze_taetigkeit(item_id: str, taetigkeit: str, dry_run: bool):
+    """Setzt die Tätigkeit auf einem bestehenden Leistungsnachweis-Item."""
+    if dry_run:
+        print(f"    [DRY-RUN] Würde Tätigkeit setzen: Item {item_id} = '{taetigkeit}'")
+        return
+    query = """
+    mutation($board_id: ID!, $item_id: ID!, $col_vals: JSON!) {
+      change_multiple_column_values(board_id: $board_id, item_id: $item_id, column_values: $col_vals) { id }
+    }
+    """
+    gql(query, {
+        "board_id": str(BOARD_LEISTUNG),
+        "item_id": str(item_id),
+        "col_vals": json.dumps({COL_LN_TAETIGKEIT: taetigkeit}),
+    })
+
+
+def backfill_taetigkeit(dry_run: bool = False):
+    """
+    Einmaliger Nachtrag: füllt die Spalte 'Tätigkeit' auf bestehenden
+    Leistungsnachweis-Items, die noch leer sind, aus der Quelle (Subitem).
+    Zuordnung über die Quell-Subitem-ID. Idempotent (schon gesetzte bleiben).
+    """
+    print("=" * 60)
+    print("Backfill: Tätigkeit nachtragen")
+    if dry_run:
+        print("MODUS: DRY-RUN (keine Schreibvorgänge)")
+    print("=" * 60)
+
+    src = paginate_subitems(BOARD_SUBITEMS)
+    tat_by_sid = {}
+    for item in src:
+        col = {c["id"]: c for c in item["column_values"]}
+        tat_by_sid[str(item["id"])] = col.get(COL_SUB_TAETIGKEIT, {}).get("text", "") or ""
+    print(f"  → {len(tat_by_sid)} Subitems als Quelle geladen")
+
+    targets = paginate_items(BOARD_LEISTUNG, [COL_LN_SUBITEM_ID, COL_LN_TAETIGKEIT])
+    updated = schon = ohne_quelle = 0
+    for it in targets:
+        if it["name"] == STEUERUNGS_ITEM_NAME:
+            continue
+        col = {c["id"]: c for c in it["column_values"]}
+        sid = (col.get(COL_LN_SUBITEM_ID, {}).get("text", "") or "").strip()
+        cur = (col.get(COL_LN_TAETIGKEIT, {}).get("text", "") or "").strip()
+        if not sid:
+            continue
+        if cur:
+            schon += 1
+            continue
+        tat = tat_by_sid.get(sid, "")
+        if not tat:
+            ohne_quelle += 1
+            continue
+        try:
+            setze_taetigkeit(it["id"], tat, dry_run)
+            updated += 1
+        except Exception as ex:
+            print(f"    ✗ Fehler bei Item {it['id']}: {ex}")
+
+    print("\n" + "=" * 60)
+    print(f"  Nachgetragen:                 {updated}")
+    print(f"  Schon gesetzt:                {schon}")
+    print(f"  Quelle ohne Tätigkeit/fehlt:  {ohne_quelle}")
+    print("=" * 60)
 
 
 # ── Hauptlogik ───────────────────────────────────────────────────────────────
@@ -573,6 +644,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Nur anzeigen was passieren würde, nichts schreiben",
     )
+    parser.add_argument(
+        "--backfill-taetigkeit",
+        action="store_true",
+        help="Einmaliger Nachtrag: Tätigkeit auf bestehenden Items nachtragen (nichts anlegen)",
+    )
     args = parser.parse_args()
 
     if API_TOKEN == "HIER_API_TOKEN_EINTRAGEN":
@@ -582,4 +658,7 @@ if __name__ == "__main__":
         print("  Option 2: Token direkt in Zeile 34 eintragen")
         sys.exit(1)
 
-    sync(monat_override=args.monat, dry_run=args.dry_run)
+    if args.backfill_taetigkeit:
+        backfill_taetigkeit(dry_run=args.dry_run)
+    else:
+        sync(monat_override=args.monat, dry_run=args.dry_run)

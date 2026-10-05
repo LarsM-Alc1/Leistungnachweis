@@ -200,7 +200,7 @@ def lade_eintraege(monat, kundenname):
               "date_mm3zzepy", "multiple_person_mm3zpgmx",
               "text_mm3zzr65", "numeric_mm3zfzkc",
               "color_mm3znz4s", "board_relation_mm3z3jnk",
-              "dropdown_mm50zhnf"
+              "dropdown_mm50zhnf", "text_mm7vvx1v"
             ]) {
               id text value
               ... on BoardRelationValue { linked_items { id name } }
@@ -240,6 +240,7 @@ def lade_eintraege(monat, kundenname):
                 "stunden":      stunden,
                 "verrechenbar": verrechenbar,
                 "auftrag":      (col.get("dropdown_mm50zhnf", {}).get("text") or "").strip(),
+                "taetigkeit":   (col.get("text_mm7vvx1v", {}).get("text") or "").strip(),
             })
         cursor = page.get("cursor")
         if not cursor:
@@ -366,33 +367,22 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
                 out.append(line)
         return out or [""]
 
-    # ── Seite 1 ──
-    y = kopfbereich(True)
-    y = tabellenkopf(y)
-
-    gesamt = 0.0
-    for idx, e in enumerate(eintraege):
+    def zeichne_zeile(idx, e):
+        nonlocal y
         d  = date.fromisoformat(e["datum"])
         sh = f"{e['stunden']:.2f}".replace(".", ",")
         vs = "Ja" if e["verrechenbar"] == "Ja" else "tw."
-        gesamt += e["stunden"]
-
         lines = umbrechen(e["leistung"])
         rh = max(ROW_MIN, 2*PAD_V + len(lines)*LEADING)
-
-        # Seitenumbruch, wenn die Zeile nicht mehr passt
-        if y - rh < UNTEN:
+        if y - rh < UNTEN:                       # Seitenumbruch mit Kopf-Wiederholung
             fusszeile(); c.showPage()
             y = kopfbereich(False)
             y = tabellenkopf(y)
-
         ry = y - rh
         if idx % 2 == 1:
             c.setFillColor(PORZELLAN); c.rect(ML, ry, TW, rh, fill=1, stroke=0)
-
-        center = ry + rh/2 - 1.2*mm          # vertikal zentriert (einzeilige Spalten)
-        top    = ry + rh - PAD_V - 3.3*mm     # erste Beschreibungszeile oben
-
+        center = ry + rh/2 - 1.2*mm
+        top    = ry + rh - PAD_V - 3.3*mm
         c.setFillColor(MITTERNACHTSBLAU); c.setFont(F_REG, FS)
         c.drawString(col_x[0]+3, center, d.strftime("%d.%m.%Y"))
         c.drawString(col_x[1]+3, center, e["mitarbeiter"])
@@ -402,23 +392,63 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
         c.setFillColor(FRISCHGRUEN if e["verrechenbar"] == "Ja" else BLAU_60)
         c.setFont(F_SEMI, FS)
         c.drawRightString(col_x[4]+col_w[4]-3, center, vs)
-
         y = ry
 
-    gesamt_str = f"{gesamt:.2f}".replace(".", ",")
+    def summenband(label, stunden, invers=False):
+        nonlocal y
+        if y - HEAD_H < UNTEN:
+            fusszeile(); c.showPage(); y = kopfbereich(False)
+        if invers:
+            c.setFillColor(MITTERNACHTSBLAU); c.rect(ML, y-HEAD_H, TW, HEAD_H, fill=1, stroke=0)
+            txt = SCHNEEWEISS
+        else:
+            c.setFillColor(FRISCHGRUEN); c.rect(ML, y-HEAD_H, TW, HEAD_H, fill=1, stroke=0)
+            txt = MITTERNACHTSBLAU
+        c.setFont(F_BOLD, 10); c.setFillColor(txt)
+        base = y - HEAD_H + 3.2*mm
+        c.drawString(col_x[2]+3, base, label)
+        c.drawRightString(col_x[3]+col_w[3]-3, base, f"{stunden:.2f}".replace(".", ","))
+        c.drawRightString(col_x[4]+col_w[4]-3, base, "h")
+        y -= HEAD_H
 
-    # Summenband (ggf. auf neue Seite)
-    if y - HEAD_H < UNTEN:
-        fusszeile(); c.showPage(); y = kopfbereich(False); y = tabellenkopf(y)
-    c.setFillColor(FRISCHGRUEN); c.rect(ML, y-HEAD_H, TW, HEAD_H, fill=1, stroke=0)
-    c.setFont(F_BOLD, 10); c.setFillColor(MITTERNACHTSBLAU)
-    base = y - HEAD_H + 3.2*mm
-    c.drawString(col_x[2]+3, base, "Gesamt verrechenbar")
-    c.drawRightString(col_x[3]+col_w[3]-3, base, gesamt_str)
-    c.drawRightString(col_x[4]+col_w[4]-3, base, "h")
-    y -= HEAD_H + 6*mm
+    def abschnittstitel(titel):
+        nonlocal y
+        if y - (7*mm + HEAD_H + ROW_MIN) < UNTEN:
+            fusszeile(); c.showPage(); y = kopfbereich(False)
+        c.setFont(F_SEMI, 11); c.setFillColor(MITTERNACHTSBLAU)
+        c.drawString(ML, y, titel); y -= 7*mm
+
+    # ── Einträge nach Tätigkeit trennen (Reisezeit separat) ──
+    ist_reise = lambda e: (e.get("taetigkeit", "") or "").strip().casefold() == "reisezeit"
+    leistung_e = [e for e in eintraege if not ist_reise(e)]
+    reise_e    = [e for e in eintraege if ist_reise(e)]
+    gesamt_leistung = sum(e["stunden"] for e in leistung_e)
+    gesamt_reise    = sum(e["stunden"] for e in reise_e)
+    gesamt_alle     = gesamt_leistung + gesamt_reise
+
+    bloecke = []
+    if leistung_e:
+        bloecke.append(("Leistung", leistung_e, gesamt_leistung))
+    if reise_e:
+        bloecke.append(("Reisezeit", reise_e, gesamt_reise))
+    mehrere = len(bloecke) > 1
+
+    y = kopfbereich(True)
+    for titel, block, summe in bloecke:
+        if mehrere:
+            abschnittstitel(titel)
+        y = tabellenkopf(y)
+        for idx, e in enumerate(block):
+            zeichne_zeile(idx, e)
+        summenband(f"Gesamt {titel}" if mehrere else "Gesamt verrechenbar", summe)
+        y -= 6*mm
+
+    if mehrere:
+        summenband("Gesamt verrechenbar (inkl. Reisezeit)", gesamt_alle, invers=True)
+        y -= 6*mm
 
     # Legende
+    gesamt_str = f"{gesamt_alle:.2f}".replace(".", ",")
     c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
     c.drawString(ML, y, "Ja = verrechenbar  ·  tw. = teilweise verrechenbar  ·  "
                         f"Verrechenbare Stunden gesamt: {gesamt_str} h")
