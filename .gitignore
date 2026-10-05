@@ -1,0 +1,6 @@
+﻿__pycache__/
+*.pyc
+_test*.png
+_test.pdf
+_render_test.py
+_make_schwinge_png.py

@@ -11,6 +11,7 @@ Schneeweiß · Schrift Manrope · keine Rahmen, runde Ecken, Schwingen-Deko.
 
 import io
 import os
+import re
 import requests
 import streamlit as st
 from datetime import date
@@ -92,6 +93,45 @@ def gql(query, variables=None):
 def monat_label(monat):
     y, m = map(int, monat.split("-"))
     return f"{MONATE_DE[m-1]} {y}"
+
+# ── KI-Begriffe neutralisieren (kundenseitige Beschreibung) ─────────────────────
+# Hinweise auf KI-Tools dürfen im Leistungsnachweis an Dritte nicht erscheinen.
+# Markennamen (Teilstring-Treffer) …
+KI_MARKEN = [
+    "chatgpt", "chat gpt", "gpt-4o", "gpt-4.1", "gpt-4", "gpt-3.5", "gpt-5", "gpt4", "gpt",
+    "openai", "anthropic", "claude", "copilot", "github copilot", "microsoft copilot",
+    "gemini", "google gemini", "bard", "perplexity", "mistral", "llama",
+    "künstliche intelligenz", "künstlicher intelligenz",
+]
+# … und Abkürzungen, die nur als eigenständiges Wort zählen (Wortgrenzen):
+KI_TOKENS = ["ki", "ai", "llm", "genai", "gen-ai"]
+
+def neutralisiere_ki(text):
+    """Entfernt/neutralisiert Hinweise auf KI-Tools im kundenseitigen Text.
+    Gibt (neuer_text, geaendert) zurück. Die monday.com-Quelle bleibt unberührt."""
+    if not text:
+        return text, False
+    marken_alt = "|".join(re.escape(m) for m in sorted(KI_MARKEN, key=len, reverse=True))
+    tokens_alt = "|".join(re.escape(m) for m in KI_TOKENS)
+    nennung = rf"(?:{marken_alt}|(?<![\wäöüß])(?:{tokens_alt})(?![\wäöüß]))"
+    t = text
+    # 1) "<KI>-Recherche" / "<KI> (gestützte) Recherche" -> "Recherche"
+    t = re.sub(rf"{nennung}[\s\-–]*(?:gestützte[rn]?\s+)?(recherche)", r"\1", t, flags=re.IGNORECASE)
+    # 2) "Recherche mit/per/via/mittels/durch <KI>" -> "Recherche"
+    t = re.sub(rf"(recherche)\s+(?:mit|per|via|mittels|über|durch|unter einsatz von)\s+{nennung}",
+               r"\1", t, flags=re.IGNORECASE)
+    # 3) "mit/per/via/mittels/durch <KI>" -> entfernen
+    t = re.sub(rf"\s*(?:mit|per|via|mittels|durch|unter einsatz von)\s+{nennung}", "", t, flags=re.IGNORECASE)
+    # 4) "(<KI>)" / "[<KI>]" -> entfernen
+    t = re.sub(rf"\s*[\(\[]\s*{nennung}\s*[\)\]]", "", t, flags=re.IGNORECASE)
+    # 5) verbleibende eigenständige Nennung -> "Recherche"
+    t = re.sub(nennung, "Recherche", t, flags=re.IGNORECASE)
+    # Aufräumen
+    t = re.sub(r"\s{2,}", " ", t)
+    t = re.sub(r"\s+([,.;:])", r"\1", t)
+    t = re.sub(r"\b([Rr]echerche)(\s+[Rr]echerche)+\b", r"\1", t)
+    t = t.strip(" -–:,")
+    return t, (t != text)
 
 # ── Daten laden ───────────────────────────────────────────────────────────────
 
@@ -231,134 +271,165 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
     ML = 20*mm
     TW = W - 2*ML
 
+    col_w = [25*mm, 32*mm, TW-25*mm-32*mm-18*mm-14*mm, 18*mm, 14*mm]
+    col_x = [ML] + [ML+sum(col_w[:i+1]) for i in range(len(col_w)-1)]
+
+    FS        = 10          # Lesetext ≥ 10 pt (CD-Print)
+    LEADING   = 4.9*mm      # Zeilenabstand innerhalb einer Beschreibung
+    PAD_V     = 3.2*mm      # Innenabstand oben/unten je Zeile
+    ROW_MIN   = 10.5*mm     # Mindest-Zeilenhöhe (Luft)
+    HEAD_H    = 9.5*mm      # Höhe Tabellenkopf / Summenband
+    RADIUS    = 2.5*mm
+    UNTEN     = 24*mm       # Grenze zur Fußzeile (kein Inhalt darunter)
+
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=A4)
 
-    # Schwingen-Deko (dezent, im Hintergrund — zuerst zeichnen)
-    _draw_schwinge(c, SCHWINGE_BLAU,  W-55*mm, H-48*mm, 70*mm)
-    _draw_schwinge(c, SCHWINGE_GRUEN, W-78*mm, 2*mm, 95*mm)
+    def deko():
+        _draw_schwinge(c, SCHWINGE_BLAU,  W-55*mm, H-48*mm, 70*mm)
+        _draw_schwinge(c, SCHWINGE_GRUEN, W-78*mm, 2*mm, 95*mm)
 
-    y = H - 15*mm
+    def fusszeile():
+        c.setStrokeColor(BLAU_10); c.setLineWidth(0.5)
+        c.line(ML, 16*mm, ML+TW, 16*mm)
+        c.setFont(F_REG, 7); c.setFillColor(BLAU_60)
+        c.drawCentredString(W/2, 11.5*mm,
+            "Alcanzar GmbH · Fritz-Haber-Straße 9 · 06217 Merseburg")
 
-    # Logo + Adresse
-    if os.path.exists(LOGO_PATH):
-        logo_img = ImageReader(LOGO_PATH)
-        # Logo-Seitenverhältnis ≈ 4,43:1 → 55 mm Breite ≈ 12,4 mm Höhe
-        c.drawImage(logo_img, ML, y-13*mm, width=55*mm, height=13*mm,
-                    preserveAspectRatio=True, anchor='sw', mask='auto')
-    c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
-    c.drawRightString(ML+TW, y-5*mm,  "Alcanzar GmbH · Fritz-Haber-Straße 9 · 06217 Merseburg")
-    c.drawRightString(ML+TW, y-11*mm, "Tel: 03461 7949251 · info@alcanzar.de · www.alcanzar.de")
-    y -= 20*mm
+    def kopfbereich(erste_seite):
+        deko()
+        yy = H - 15*mm
+        if os.path.exists(LOGO_PATH):
+            c.drawImage(ImageReader(LOGO_PATH), ML, yy-13*mm, width=55*mm, height=13*mm,
+                        preserveAspectRatio=True, anchor='sw', mask='auto')
+        c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
+        c.drawRightString(ML+TW, yy-5*mm,  "Alcanzar GmbH · Fritz-Haber-Straße 9 · 06217 Merseburg")
+        c.drawRightString(ML+TW, yy-11*mm, "Tel: 03461 7949251 · info@alcanzar.de · www.alcanzar.de")
+        yy -= 20*mm
+        c.setStrokeColor(FRISCHGRUEN); c.setLineWidth(2)
+        c.line(ML, yy, ML+TW, yy); yy -= 11*mm
+        c.setFont(F_BOLD, 17); c.setFillColor(MITTERNACHTSBLAU)
+        c.drawString(ML, yy, "Leistungsnachweis" if erste_seite else "Leistungsnachweis (Fortsetzung)")
+        yy -= 11*mm
+        if erste_seite:
+            def feld(label, value, lx, vx):
+                c.setFont(F_SEMI, 10); c.setFillColor(BLAU_60); c.drawString(lx, yy, label)
+                c.setFont(F_REG, 10); c.setFillColor(MITTERNACHTSBLAU); c.drawString(vx, yy, value)
+            feld("Kunde", kundenname, ML, ML+16*mm)
+            feld("Zeitraum", ml_label, ML+92*mm, ML+112*mm)
+            feld("Erstellt", heute, ML+145*mm, ML+161*mm)
+            yy -= 7*mm
+            if auftrag_label:
+                feld("Auftrag", auftrag_label, ML, ML+16*mm)
+                yy -= 7*mm
+            yy -= 4*mm
+        else:
+            yy -= 2*mm
+        return yy
 
-    # Akzentlinie Frischgrün
-    c.setStrokeColor(FRISCHGRUEN); c.setLineWidth(2)
-    c.line(ML, y, ML+TW, y); y -= 10*mm
+    def tabellenkopf(yy):
+        c.setFillColor(MITTERNACHTSBLAU)
+        c.roundRect(ML, yy-HEAD_H, TW, HEAD_H+RADIUS, RADIUS, fill=1, stroke=0)
+        c.rect(ML, yy-HEAD_H, TW, HEAD_H-RADIUS+0.5, fill=1, stroke=0)  # untere Kante bündig
+        c.setFillColor(SCHNEEWEISS); c.setFont(F_SEMI, 10)
+        for i,(hdr,cx,cw) in enumerate(zip(
+                ["Datum","Mitarbeiter/in","Leistungsbeschreibung","Std.","Verr."], col_x, col_w)):
+            if i>=3: c.drawRightString(cx+cw-3, yy-HEAD_H+3.2*mm, hdr)
+            else:    c.drawString(cx+3, yy-HEAD_H+3.2*mm, hdr)
+        return yy - HEAD_H
 
-    # Titel
-    c.setFont(F_BOLD, 17); c.setFillColor(MITTERNACHTSBLAU)
-    c.drawString(ML, y, "Leistungsnachweis"); y -= 9*mm
+    def umbrechen(text):
+        """Beschreibung in beliebig viele Zeilen umbrechen (nichts abschneiden)."""
+        max_w = col_w[2] - 6
+        out = []
+        for para in (text or "").split("\n"):
+            words = para.split()
+            if not words:
+                out.append("")
+                continue
+            line = ""
+            for w in words:
+                test = (line + " " + w).strip()
+                if c.stringWidth(test, F_REG, FS) <= max_w:
+                    line = test
+                else:
+                    if line:
+                        out.append(line); line = ""
+                    # überlanges Einzelwort hart umbrechen
+                    while c.stringWidth(w, F_REG, FS) > max_w and len(w) > 1:
+                        cut = len(w)
+                        while cut > 1 and c.stringWidth(w[:cut] + "-", F_REG, FS) > max_w:
+                            cut -= 1
+                        out.append(w[:cut] + "-"); w = w[cut:]
+                    line = w
+            if line:
+                out.append(line)
+        return out or [""]
 
-    # Meta
-    c.setFont(F_SEMI, 10); c.setFillColor(BLAU_60)
-    c.drawString(ML, y, "Kunde")
-    c.setFont(F_REG, 10); c.setFillColor(MITTERNACHTSBLAU)
-    c.drawString(ML+16*mm, y, kundenname)
-    c.setFont(F_SEMI, 10); c.setFillColor(BLAU_60)
-    c.drawString(ML+92*mm, y, "Zeitraum")
-    c.setFont(F_REG, 10); c.setFillColor(MITTERNACHTSBLAU)
-    c.drawString(ML+112*mm, y, ml_label)
-    c.setFont(F_SEMI, 10); c.setFillColor(BLAU_60)
-    c.drawString(ML+145*mm, y, "Erstellt")
-    c.setFont(F_REG, 10); c.setFillColor(MITTERNACHTSBLAU)
-    c.drawString(ML+161*mm, y, heute)
-    y -= 6.5*mm
-
-    # Auftrag (nur wenn ein konkreter Auftrag gewählt wurde)
-    if auftrag_label:
-        c.setFont(F_SEMI, 10); c.setFillColor(BLAU_60)
-        c.drawString(ML, y, "Auftrag")
-        c.setFont(F_REG, 10); c.setFillColor(MITTERNACHTSBLAU)
-        c.drawString(ML+16*mm, y, auftrag_label)
-        y -= 6.5*mm
-    y -= 3*mm
-
-    # Tabelle
-    row_h = 9*mm
-    col_w = [25*mm, 35*mm, TW-25*mm-35*mm-18*mm-14*mm, 18*mm, 14*mm]
-    col_x = [ML] + [ML+sum(col_w[:i+1]) for i in range(len(col_w)-1)]
-    radius = 2.5*mm
-
-    # Header — Mitternachtsblau, runde obere Ecken, weiße Schrift
-    c.setFillColor(MITTERNACHTSBLAU)
-    c.roundRect(ML, y-row_h, TW, row_h+radius, radius, fill=1, stroke=0)
-    c.rect(ML, y-row_h, TW, row_h-radius+0.5, fill=1, stroke=0)  # untere Kante bündig
-    c.setFillColor(SCHNEEWEISS); c.setFont(F_SEMI, 10)
-    for i,(hdr,cx,cw) in enumerate(zip(
-            ["Datum","Mitarbeiter/in","Leistungsbeschreibung","Std.","Verr."],col_x,col_w)):
-        if i>=3: c.drawRightString(cx+cw-3, y-row_h+3*mm, hdr)
-        else:    c.drawString(cx+3, y-row_h+3*mm, hdr)
-    y -= row_h
-    tab_top = y
+    # ── Seite 1 ──
+    y = kopfbereich(True)
+    y = tabellenkopf(y)
 
     gesamt = 0.0
     for idx, e in enumerate(eintraege):
         d  = date.fromisoformat(e["datum"])
-        sh = f"{e['stunden']:.2f}".replace(".",",")
-        vs = "Ja" if e["verrechenbar"]=="Ja" else "tw."
+        sh = f"{e['stunden']:.2f}".replace(".", ",")
+        vs = "Ja" if e["verrechenbar"] == "Ja" else "tw."
         gesamt += e["stunden"]
-        rh = 9*mm; ry = y-rh
-        if idx%2==1:
-            c.setFillColor(PORZELLAN); c.rect(ML, ry, TW, rh, fill=1, stroke=0)
-        c.setFillColor(MITTERNACHTSBLAU); c.setFont(F_REG, 10)
-        c.drawString(col_x[0]+3, ry+2.8*mm, d.strftime("%d.%m.%Y"))
-        c.drawString(col_x[1]+3, ry+2.8*mm, e["mitarbeiter"])
-        # Mehrzeilig umbrechen wenn nötig
-        leistung = e["leistung"]
-        max_w = col_w[2] - 6
-        words = leistung.split()
-        lines = []
-        line = ""
-        for word in words:
-            test = (line + " " + word).strip()
-            if c.stringWidth(test, F_REG, 10) <= max_w:
-                line = test
-            else:
-                if line: lines.append(line)
-                line = word
-        if line: lines.append(line)
-        lines = lines[:2]  # max 2 Zeilen
-        if len(lines) == 2:
-            c.drawString(col_x[2]+3, ry+4.5*mm, lines[0])
-            c.drawString(col_x[2]+3, ry+1.1*mm, lines[1])
-        else:
-            c.drawString(col_x[2]+3, ry+2.8*mm, lines[0] if lines else "")
-        c.drawRightString(col_x[3]+col_w[3]-3, ry+2.8*mm, sh)
-        # "Verr." farblich: Ja = Frischgrün, tw. = gedämpftes Blau
-        c.setFillColor(FRISCHGRUEN if e["verrechenbar"]=="Ja" else BLAU_60)
-        c.setFont(F_SEMI, 10)
-        c.drawRightString(col_x[4]+col_w[4]-3, ry+2.8*mm, vs)
-        y -= rh
 
-    # Summe — Frischgrün-Band, Text Mitternachtsblau (CD-Farbpaar)
-    sum_h = 9*mm
-    c.setFillColor(FRISCHGRUEN); c.rect(ML, y-sum_h, TW, sum_h, fill=1, stroke=0)
+        lines = umbrechen(e["leistung"])
+        rh = max(ROW_MIN, 2*PAD_V + len(lines)*LEADING)
+
+        # Seitenumbruch, wenn die Zeile nicht mehr passt
+        if y - rh < UNTEN:
+            fusszeile(); c.showPage()
+            y = kopfbereich(False)
+            y = tabellenkopf(y)
+
+        ry = y - rh
+        if idx % 2 == 1:
+            c.setFillColor(PORZELLAN); c.rect(ML, ry, TW, rh, fill=1, stroke=0)
+
+        center = ry + rh/2 - 1.2*mm          # vertikal zentriert (einzeilige Spalten)
+        top    = ry + rh - PAD_V - 3.3*mm     # erste Beschreibungszeile oben
+
+        c.setFillColor(MITTERNACHTSBLAU); c.setFont(F_REG, FS)
+        c.drawString(col_x[0]+3, center, d.strftime("%d.%m.%Y"))
+        c.drawString(col_x[1]+3, center, e["mitarbeiter"])
+        for li, ln in enumerate(lines):
+            c.drawString(col_x[2]+3, top - li*LEADING, ln)
+        c.drawRightString(col_x[3]+col_w[3]-3, center, sh)
+        c.setFillColor(FRISCHGRUEN if e["verrechenbar"] == "Ja" else BLAU_60)
+        c.setFont(F_SEMI, FS)
+        c.drawRightString(col_x[4]+col_w[4]-3, center, vs)
+
+        y = ry
+
+    gesamt_str = f"{gesamt:.2f}".replace(".", ",")
+
+    # Summenband (ggf. auf neue Seite)
+    if y - HEAD_H < UNTEN:
+        fusszeile(); c.showPage(); y = kopfbereich(False); y = tabellenkopf(y)
+    c.setFillColor(FRISCHGRUEN); c.rect(ML, y-HEAD_H, TW, HEAD_H, fill=1, stroke=0)
     c.setFont(F_BOLD, 10); c.setFillColor(MITTERNACHTSBLAU)
-    c.drawString(col_x[2]+3, y-sum_h+2.8*mm, "Gesamt verrechenbar")
-    c.drawRightString(col_x[3]+col_w[3]-3, y-sum_h+2.8*mm, f"{gesamt:.2f}".replace(".",","))
-    c.drawRightString(col_x[4]+col_w[4]-3, y-sum_h+2.8*mm, "h")
-    y -= sum_h + 5*mm
+    base = y - HEAD_H + 3.2*mm
+    c.drawString(col_x[2]+3, base, "Gesamt verrechenbar")
+    c.drawRightString(col_x[3]+col_w[3]-3, base, gesamt_str)
+    c.drawRightString(col_x[4]+col_w[4]-3, base, "h")
+    y -= HEAD_H + 6*mm
 
     # Legende
-    gesamt_str = f"{gesamt:.2f}".replace(".", ",")
     c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
     c.drawString(ML, y, "Ja = verrechenbar  ·  tw. = teilweise verrechenbar  ·  "
                         f"Verrechenbare Stunden gesamt: {gesamt_str} h")
-    y -= 12*mm
+    y -= 15*mm
 
-    # Bestätigung
+    # Bestätigungsblock zusammenhalten (sonst neue Seite)
+    if y - 26*mm < UNTEN:
+        fusszeile(); c.showPage(); y = kopfbereich(False)
+
     c.setFont(F_SEMI, 11); c.setFillColor(MITTERNACHTSBLAU)
-    c.drawString(ML, y, "Bestätigung"); y -= 10*mm
+    c.drawString(ML, y, "Bestätigung"); y -= 11*mm
 
     cb_size = 13
     cb_x = ML
@@ -373,7 +444,6 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
     c.setFont(F_REG, 10); c.setFillColor(MITTERNACHTSBLAU)
     c.drawString(cb_x+cb_size+4, cb_y+2.5, "Leistung bestätigt")
 
-    # Name
     name_x = ML+55*mm; name_w = 80*mm; name_h = 13
     c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
     c.drawString(name_x, cb_y+name_h+3, "Name")
@@ -385,7 +455,6 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
         borderStyle="solid",
     )
 
-    # Datum
     dat_x = ML+143*mm; dat_w = 27*mm; dat_h = 13
     c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
     c.drawString(dat_x, cb_y+dat_h+3, "Datum")
@@ -397,13 +466,7 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
         borderStyle="solid",
     )
 
-    # Fußzeile (schlichte Adresszeile, 7 pt)
-    c.setStrokeColor(BLAU_10); c.setLineWidth(0.5)
-    c.line(ML, 16*mm, ML+TW, 16*mm)
-    c.setFont(F_REG, 7); c.setFillColor(BLAU_60)
-    c.drawCentredString(W/2, 11.5*mm,
-        "Alcanzar GmbH · Fritz-Haber-Straße 9 · 06217 Merseburg")
-
+    fusszeile()
     c.save()
     return buf.getvalue()
 
@@ -495,6 +558,21 @@ if st.button("📄 PDF generieren", type="primary", use_container_width=True):
         hinweis = f" (Auftrag: {sel_auftrag})" if sel_auftrag != ALLE_AUFTRAEGE else ""
         st.warning(f"Keine verrechenbaren Einträge für diesen Kunden im gewählten Monat{hinweis}.")
         st.stop()
+
+    # KI-Bezüge in der kundenseitigen Beschreibung neutralisieren (nur fürs PDF)
+    ki_aenderungen = []
+    for e in eintraege:
+        neu, geaendert = neutralisiere_ki(e["leistung"])
+        if geaendert:
+            ki_aenderungen.append({"datum": e["datum"], "alt": e["leistung"], "neu": neu})
+            e["leistung"] = neu
+
+    if ki_aenderungen:
+        with st.expander(f"⚠️ {len(ki_aenderungen)} Eintrag/Einträge mit KI-Bezug neutralisiert", expanded=True):
+            st.caption("Diese Hinweise auf KI-Tools wurden im PDF durch eine neutrale Formulierung "
+                       "ersetzt. Die Quelle in monday.com bleibt unverändert — bei Bedarf dort anpassen.")
+            for a in ki_aenderungen:
+                st.markdown(f"- **{a['datum']}**: ~~{a['alt']}~~ → **{a['neu']}**")
 
     gesamt = sum(e["stunden"] for e in eintraege)
 
