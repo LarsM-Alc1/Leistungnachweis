@@ -33,6 +33,9 @@ STEUERUNGS_ITEM = "▶ Nachweise generieren"
 OHNE_AUFTRAG = "(ohne Auftrag)"
 ALLE_AUFTRAEGE = "Alle Aufträge"
 
+# "teilweise verrechenbar" wird pauschal mit diesem Anteil gewertet (Geschäftsvorgabe).
+TW_FAKTOR = 0.50
+
 # ── Corporate Design — vier Markenfarben, mehr gibt es nicht ────────────────────
 MITTERNACHTSBLAU = colors.HexColor("#1C2D50")   # Text, Überschriften, dunkle Flächen
 FRISCHGRUEN      = colors.HexColor("#76B82A")   # Akzent
@@ -93,6 +96,16 @@ def gql(query, variables=None):
 def monat_label(monat):
     y, m = map(int, monat.split("-"))
     return f"{MONATE_DE[m-1]} {y}"
+
+def verr_std(e):
+    """Verrechenbare Stunden eines Eintrags.
+    'Ja' = volle Stunden, 'Teilweise' = Anteil TW_FAKTOR, sonst 0
+    (Nein-Einträge werden ohnehin schon beim Laden herausgefiltert)."""
+    if e.get("verrechenbar") == "Ja":
+        return e.get("stunden", 0.0)
+    if e.get("verrechenbar") == "Teilweise":
+        return e.get("stunden", 0.0) * TW_FAKTOR
+    return 0.0
 
 # ── KI-Begriffe neutralisieren (kundenseitige Beschreibung) ─────────────────────
 # Hinweise auf KI-Tools dürfen im Leistungsnachweis an Dritte nicht erscheinen.
@@ -272,7 +285,8 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
     ML = 20*mm
     TW = W - 2*ML
 
-    col_w = [25*mm, 32*mm, TW-25*mm-32*mm-18*mm-14*mm, 18*mm, 14*mm]
+    # Spalten: Datum · Mitarbeiter · Beschreibung · erfasste Std · verr. Std · Verr.-Flag
+    col_w = [25*mm, 32*mm, TW-25*mm-32*mm-16*mm-16*mm-14*mm, 16*mm, 16*mm, 14*mm]
     col_x = [ML] + [ML+sum(col_w[:i+1]) for i in range(len(col_w)-1)]
 
     FS        = 10          # Lesetext ≥ 10 pt (CD-Print)
@@ -342,7 +356,7 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
         c.rect(ML, yy-HEAD_H, TW, HEAD_H-RADIUS+0.5, fill=1, stroke=0)  # untere Kante bündig
         c.setFillColor(SCHNEEWEISS); c.setFont(F_SEMI, 10)
         for i,(hdr,cx,cw) in enumerate(zip(
-                ["Datum","Mitarbeiter/in","Leistungsbeschreibung","Std.","Verr."], col_x, col_w)):
+                ["Datum","Mitarbeiter/in","Leistungsbeschreibung","Std.","verr.","Verr."], col_x, col_w)):
             if i>=3: c.drawRightString(cx+cw-3, yy-HEAD_H+3.2*mm, hdr)
             else:    c.drawString(cx+3, yy-HEAD_H+3.2*mm, hdr)
         return yy - HEAD_H
@@ -377,9 +391,10 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
 
     def zeichne_zeile(idx, e):
         nonlocal y
-        d  = date.fromisoformat(e["datum"])
-        sh = f"{e['stunden']:.2f}".replace(".", ",")
-        vs = "Ja" if e["verrechenbar"] == "Ja" else "tw."
+        d   = date.fromisoformat(e["datum"])
+        sh  = f"{e['stunden']:.2f}".replace(".", ",")
+        vsh = f"{verr_std(e):.2f}".replace(".", ",")
+        vs  = "Ja" if e["verrechenbar"] == "Ja" else "tw."
         lines = umbrechen(e["leistung"])
         rh = max(ROW_MIN, 2*PAD_V + len(lines)*LEADING)
         if y - rh < UNTEN:                       # Seitenumbruch mit Kopf-Wiederholung
@@ -397,9 +412,10 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
         for li, ln in enumerate(lines):
             c.drawString(col_x[2]+3, top - li*LEADING, ln)
         c.drawRightString(col_x[3]+col_w[3]-3, center, sh)
+        c.drawRightString(col_x[4]+col_w[4]-3, center, vsh)
         c.setFillColor(FRISCHGRUEN if e["verrechenbar"] == "Ja" else BLAU_60)
         c.setFont(F_SEMI, FS)
-        c.drawRightString(col_x[4]+col_w[4]-3, center, vs)
+        c.drawRightString(col_x[5]+col_w[5]-3, center, vs)
         y = ry
 
     def summenband(label, stunden, invers=False):
@@ -415,8 +431,8 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
         c.setFont(F_BOLD, 10); c.setFillColor(txt)
         base = y - HEAD_H + 3.2*mm
         c.drawString(col_x[2]+3, base, label)
-        c.drawRightString(col_x[3]+col_w[3]-3, base, f"{stunden:.2f}".replace(".", ","))
-        c.drawRightString(col_x[4]+col_w[4]-3, base, "h")
+        c.drawRightString(col_x[4]+col_w[4]-3, base, f"{stunden:.2f}".replace(".", ","))
+        c.drawRightString(col_x[5]+col_w[5]-3, base, "h")
         y -= HEAD_H
 
     def abschnittstitel(titel):
@@ -430,8 +446,8 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
     ist_reise = lambda e: (e.get("taetigkeit", "") or "").strip().casefold() == "reisezeit"
     leistung_e = [e for e in eintraege if not ist_reise(e)]
     reise_e    = [e for e in eintraege if ist_reise(e)]
-    gesamt_leistung = sum(e["stunden"] for e in leistung_e)
-    gesamt_reise    = sum(e["stunden"] for e in reise_e)
+    gesamt_leistung = sum(verr_std(e) for e in leistung_e)
+    gesamt_reise    = sum(verr_std(e) for e in reise_e)
     gesamt_alle     = gesamt_leistung + gesamt_reise
 
     bloecke = []
@@ -457,8 +473,9 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
 
     # Legende
     gesamt_str = f"{gesamt_alle:.2f}".replace(".", ",")
+    prozent = f"{TW_FAKTOR*100:.0f}"
     c.setFont(F_REG, 8); c.setFillColor(BLAU_60)
-    c.drawString(ML, y, "Ja = verrechenbar  ·  tw. = teilweise verrechenbar  ·  "
+    c.drawString(ML, y, f"Std. = erfasst  ·  verr. = verrechenbar (tw. zu {prozent} % gewertet)  ·  "
                         f"Verrechenbare Stunden gesamt: {gesamt_str} h")
 
     # Dokument endet nach Summe + Legende (Rechnungsanlage, keine Unterschrift nötig).
@@ -565,7 +582,7 @@ if st.button("📄 PDF generieren", type="primary", use_container_width=True):
             ki_aenderungen.append({"datum": e["datum"], "alt": e["leistung"], "neu": neu})
             e["leistung"] = neu
 
-    gesamt = sum(e["stunden"] for e in eintraege)
+    gesamt = sum(verr_std(e) for e in eintraege)
     pdf_auftrag = sel_auftrag if sel_auftrag not in (ALLE_AUFTRAEGE, OHNE_AUFTRAG) else None
 
     with st.spinner("Erstelle PDF..."):
@@ -603,7 +620,7 @@ elif res:
 
     c1, c2 = st.columns(2)
     c1.metric("Verrechenbare Einträge", res["n"])
-    c2.metric("Stunden gesamt", f"{gstr} h")
+    c2.metric("Verrechenbar gesamt", f"{gstr} h")
 
     st.success(f"PDF erstellt — {res['n']} Einträge, {gstr} h verrechenbar")
     st.download_button(
