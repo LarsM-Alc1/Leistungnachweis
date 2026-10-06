@@ -316,13 +316,21 @@ def erstelle_pdf(kundenname, eintraege, monat, auftrag_label=None):
             def feld(label, value, lx, vx):
                 c.setFont(F_SEMI, 10); c.setFillColor(BLAU_60); c.drawString(lx, yy, label)
                 c.setFont(F_REG, 10); c.setFillColor(MITTERNACHTSBLAU); c.drawString(vx, yy, value)
+            def feld_rechts(label, value, rx):
+                # Wert rechtsbündig an rx, Label unmittelbar davor — fluchtet mit der Tabellenkante
+                c.setFont(F_REG, 10); vw = c.stringWidth(value, F_REG, 10)
+                c.setFillColor(MITTERNACHTSBLAU); c.drawRightString(rx, yy, value)
+                c.setFont(F_SEMI, 10); c.setFillColor(BLAU_60)
+                c.drawRightString(rx - vw - 4*mm, yy, label)
+            # Zeile 1: Kunde links · Erstellt rechtsbündig an der Tabellenkante
             feld("Kunde", kundenname, ML, ML+16*mm)
-            feld("Zeitraum", ml_label, ML+92*mm, ML+112*mm)
-            feld("Erstellt", heute, ML+145*mm, ML+161*mm)
+            feld_rechts("Erstellt", heute, ML+TW)
             yy -= 7*mm
+            # Zeile 2: Zeitraum links · optional Auftrag
+            feld("Zeitraum", ml_label, ML, ML+20*mm)
             if auftrag_label:
-                feld("Auftrag", auftrag_label, ML, ML+16*mm)
-                yy -= 7*mm
+                feld("Auftrag", auftrag_label, ML+92*mm, ML+108*mm)
+            yy -= 7*mm
             yy -= 4*mm
         else:
             yy -= 2*mm
