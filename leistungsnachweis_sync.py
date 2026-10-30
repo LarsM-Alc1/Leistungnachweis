@@ -442,7 +442,8 @@ def lege_item_an(eintrag: dict, group_id: str, dry_run: bool) -> bool:
         board_id: $board_id,
         group_id: $group_id,
         item_name: $name,
-        column_values: $col_vals
+        column_values: $col_vals,
+        create_labels_if_missing: true
       ) { id }
     }
     """
